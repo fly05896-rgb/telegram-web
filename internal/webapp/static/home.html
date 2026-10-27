@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#161822">
+    <meta name="description" content="Search music, build a queue and save playlists in TeleMusic, the Liquid Glass music player for your Telegram chats.">
+    <title>TeleMusic · Music for Telegram</title>
+    <link rel="stylesheet" href="/static/public.css?v=99">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+        (function () {
+            var tg = window.Telegram && window.Telegram.WebApp;
+            var hasTgData = (tg && tg.initData && tg.initData.length > 0) ||
+                location.hash.indexOf('tgWebAppData') !== -1 ||
+                location.search.indexOf('tgWebAppStartParam') !== -1 ||
+                location.search.indexOf('startapp=') !== -1;
+            if (hasTgData) {
+                location.replace('/room' + location.search + location.hash);
+            }
+        })();
+    </script>
+    <script type="module" src="/static/js/appearance.js?v=99"></script>
+</head>
+<body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+        <a class="brand" href="/" aria-label="TeleMusic home"><svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13M9 9l12-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="16" rx="3" ry="3"/></svg>TeleMusic</a>
+        <nav aria-label="Main navigation"><a href="/privacy">Privacy</a><a href="https://t.me/TeleMusic_webbot" target="_blank" rel="noopener noreferrer">Telegram Bot</a></nav>
+    </header>
+    <main id="main" class="home-main">
+        <section class="hero" aria-labelledby="hero-title">
+            <h1 id="hero-title">Play your favorites.<br><span>Share the queue.</span></h1>
+            <p class="hero-description">Find a song, line up the next one, and keep your favorites close. A Liquid Glass music player built for your Telegram chats.</p>
+            <div class="actions"><a id="open-player-link" class="button primary" href="/room?guest=1">Open player <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a><a class="button quiet" href="https://t.me/TeleMusic_webbot" target="_blank" rel="noopener noreferrer">Play from Telegram</a></div>
+            <p class="action-note">For your group’s room, open the player from Telegram with <code>/player</code> or tap <strong>Open player</strong> above.</p>
+        </section>
+        <section class="listening-features" aria-label="Inside the player">
+            <div><h2>One shared queue</h2><p>Search for music, line up your favorites, and let everyone add their next pick.</p></div>
+            <div><h2>Keep your favorites</h2><p>Save the tracks you come back to. Keep personal playlists ready for the next play.</p></div>
+            <div><h2>Stay in the conversation</h2><p>Use room chat or join microphone-only voice chat while you listen.</p></div>
+        </section>
+        <section id="getting-started" class="getting-started" aria-labelledby="start-title">
+            <div><h2 id="start-title">Bring music to your chat.</h2><p>Start a track in Telegram, then open the player to take it from there.</p></div>
+            <ol class="steps">
+                <li><strong>Add the bot to your group</strong><p>Use the bot’s <code>/start</code> menu in Telegram to add it.</p></li>
+                <li><strong>Choose the first track</strong><p>Send <code>/play</code> with a song name or supported link.</p></li>
+                <li><strong>Start listening</strong><p>Send <code>/player</code> and open its Web Player button, or open directly in your browser.</p></li>
+            </ol>
+        </section>
+        <section class="privacy-note" aria-labelledby="privacy-title"><h2 id="privacy-title">Know what you share.</h2><p>Listening rooms are shared spaces. Other listeners can see your displayed profile, track requests, and chat messages, and hear you when your microphone is on.</p><a href="/privacy">Read the privacy policy</a></section>
+    </main>
+    <footer class="site-footer"><p>TeleMusic · Music for Telegram</p><nav aria-label="Footer navigation"><a href="/privacy">Privacy policy</a><a href="{{.SupportURL}}" target="_blank" rel="noopener noreferrer">Support</a></nav></footer>
+    <script>
+        (function () {
+            var btn = document.getElementById('open-player-link');
+            if (btn && (location.search || location.hash)) {
+                btn.href = '/room' + (location.search || '?guest=1') + location.hash;
+            }
+        })();
+    </script>
+</body>
+</html>

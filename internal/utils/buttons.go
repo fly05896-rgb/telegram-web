@@ -1,0 +1,227 @@
+package utils
+
+import (
+	"ashokshau/tg-web/internal/config"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"strings"
+
+	"github.com/AshokShau/gotdbot"
+)
+
+func cb(text, data string, style gotdbot.ButtonStyle) gotdbot.InlineKeyboardButton {
+	return gotdbot.InlineKeyboardButton{
+		Text: text,
+		Type: &gotdbot.InlineKeyboardButtonTypeCallback{
+			Data: []byte(data),
+		},
+		Style: style,
+	}
+}
+
+func url(text, link string, style gotdbot.ButtonStyle) gotdbot.InlineKeyboardButton {
+	return gotdbot.InlineKeyboardButton{
+		Text: text,
+		Type: &gotdbot.InlineKeyboardButtonTypeUrl{
+			Url: link,
+		},
+		Style: style,
+	}
+}
+
+func webAppNativeBtn(text, link string, style gotdbot.ButtonStyle) gotdbot.InlineKeyboardButton {
+	return gotdbot.InlineKeyboardButton{
+		Text: text,
+		Type: &gotdbot.InlineKeyboardButtonTypeWebApp{
+			Url: link,
+		},
+		Style: style,
+	}
+}
+
+var CloseBtn = cb("Close", "play_close", gotdbot.ButtonStyleDanger{})
+var HomeBtn = cb("Home", "help_back", gotdbot.ButtonStylePrimary{})
+var HelpBtn = cb("Help", "help_all", gotdbot.ButtonStyleDefault{})
+var UserBtn = cb("Users", "help_user", gotdbot.ButtonStyleDefault{})
+var AdminBtn = cb("Admins", "help_admin", gotdbot.ButtonStyleDefault{})
+var OwnerBtn = cb("Owner", "help_owner", gotdbot.ButtonStyleDefault{})
+var DevsBtn = cb("Devs", "help_devs", gotdbot.ButtonStyleDefault{})
+var PlaylistBtn = cb("Playlist", "help_playlist", gotdbot.ButtonStyleDefault{})
+var AutoplayBtn = cb("Autoplay", "help_autoplay", gotdbot.ButtonStyleDefault{})
+
+var SourceCodeBtn = url("Source Code", "https://github.com/AshokShau/telegram-web-player", gotdbot.ButtonStylePrimary{})
+var channelBtn = url("Updates", config.SupportChannel, gotdbot.ButtonStyleDefault{})
+var groupBtn = url("Group", config.SupportGroup, gotdbot.ButtonStyleDefault{})
+
+func SupportKeyboard() *gotdbot.ReplyMarkupInlineKeyboard {
+	return &gotdbot.ReplyMarkupInlineKeyboard{
+		Rows: [][]gotdbot.InlineKeyboardButton{
+			{channelBtn, groupBtn},
+			{CloseBtn},
+		},
+	}
+}
+
+func SettingsKeyboard(playMode, adminMode string, cmdDelete bool, language string, autoplay bool, chatEnabled bool) *gotdbot.ReplyMarkupInlineKeyboard {
+	playText := "Everyone"
+	if playMode == Admins {
+		playText = "Admins"
+	}
+
+	deleteText := "False"
+	if cmdDelete {
+		deleteText = "True"
+	}
+
+	adminText := "Everyone"
+	if adminMode == Admins {
+		adminText = "Admins"
+	}
+
+	langText := "English"
+	if language != "en" && language != "" {
+		langText = language
+	}
+
+	autoplayText := "Disabled"
+	if autoplay {
+		autoplayText = "Enabled"
+	}
+
+	chatText := "Disabled"
+	if chatEnabled {
+		chatText = "Enabled"
+	}
+
+	return &gotdbot.ReplyMarkupInlineKeyboard{
+		Rows: [][]gotdbot.InlineKeyboardButton{
+			{
+				cb("Play Mode ➜", "settings_main", gotdbot.ButtonStyleDefault{}),
+				cb(playText, "settings_play", gotdbot.ButtonStyleDefault{}),
+			},
+			{
+				cb("Command Delete ➜", "settings_main", gotdbot.ButtonStyleDefault{}),
+				cb(deleteText, "settings_delete", gotdbot.ButtonStyleDefault{}),
+			},
+			{
+				cb("Admin Mode ➜", "settings_main", gotdbot.ButtonStyleDefault{}),
+				cb(adminText, "settings_admin", gotdbot.ButtonStyleDefault{}),
+			},
+			{
+				cb("Autoplay ➜", "settings_main", gotdbot.ButtonStyleDefault{}),
+				cb(autoplayText, "settings_autoplay", gotdbot.ButtonStyleDefault{}),
+			},
+			{
+				cb("Chat Mode ➜", "settings_main", gotdbot.ButtonStyleDefault{}),
+				cb(chatText, "settings_chat", gotdbot.ButtonStyleDefault{}),
+			},
+			{
+				cb("Language ➜", "settings_main", gotdbot.ButtonStyleDefault{}),
+				cb(langText, "settings_lang", gotdbot.ButtonStyleDefault{}),
+			},
+			{CloseBtn},
+		},
+	}
+}
+
+func HelpMenuKeyboard() *gotdbot.ReplyMarkupInlineKeyboard {
+	return &gotdbot.ReplyMarkupInlineKeyboard{
+		Rows: [][]gotdbot.InlineKeyboardButton{
+			{UserBtn, AdminBtn, OwnerBtn},
+			{PlaylistBtn, DevsBtn, AutoplayBtn},
+			{HomeBtn, CloseBtn},
+		},
+	}
+}
+
+func BackHelpMenuKeyboard() *gotdbot.ReplyMarkupInlineKeyboard {
+	return &gotdbot.ReplyMarkupInlineKeyboard{
+		Rows: [][]gotdbot.InlineKeyboardButton{
+			{HelpBtn, HomeBtn},
+			{CloseBtn, SourceCodeBtn},
+		},
+	}
+}
+
+func AddMeMarkup(username string) *gotdbot.ReplyMarkupInlineKeyboard {
+	addMeBtn := url(
+		"Aᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ",
+		fmt.Sprintf("https://t.me/%s?startgroup=true", username),
+		gotdbot.ButtonStylePrimary{},
+	)
+
+	return &gotdbot.ReplyMarkupInlineKeyboard{
+		Rows: [][]gotdbot.InlineKeyboardButton{
+			{addMeBtn},
+			{HelpBtn},
+			{channelBtn, groupBtn},
+			{SourceCodeBtn},
+		},
+	}
+}
+
+func PlayNowButton(trackID string) gotdbot.InlineKeyboardButton {
+	return cb("Play Now", PlayNowCallbackData(trackID), gotdbot.ButtonStyleDanger{})
+}
+
+func PlayNowCallbackData(trackID string) string {
+	data := "play_now_" + trackID
+	if len(data) <= 64 {
+		return data
+	}
+	hash := sha256.Sum256([]byte(trackID))
+	return "play_now_hash_" + base64.RawURLEncoding.EncodeToString(hash[:])
+}
+
+func webAppButton(botUsername string, chatID int64) gotdbot.InlineKeyboardButton {
+	shortName := strings.Trim(config.WebAppShortName, "/")
+	if shortName == "" {
+		shortName = "web"
+	}
+	if chatID > 0 && config.WebAppURL != "" {
+		directRoomURL := fmt.Sprintf("%s/room?startapp=%d&chat_id=%d", config.WebAppURL, chatID, chatID)
+		return webAppNativeBtn("Web Player", directRoomURL, gotdbot.ButtonStylePrimary{})
+	}
+	webAppURL := fmt.Sprintf("https://t.me/%s/%s?startapp=%d", botUsername, shortName, chatID)
+	return url("Web Player", webAppURL, gotdbot.ButtonStylePrimary{})
+}
+
+func QueueMarkup(trackID, botUsername string, chatId int64) *gotdbot.ReplyMarkupInlineKeyboard {
+	return &gotdbot.ReplyMarkupInlineKeyboard{
+		Rows: [][]gotdbot.InlineKeyboardButton{
+			{PlayNowButton(trackID), webAppButton(botUsername, chatId)},
+		},
+	}
+}
+
+func WebAppControlButtons(mode string, botUsername string, chatID int64) *gotdbot.ReplyMarkupInlineKeyboard {
+	webAppBtn := webAppButton(botUsername, chatID)
+	skipBtn := cb("‣‣I", "play_skip", gotdbot.ButtonStyleDefault{})
+	stopBtn := cb("▢", "play_stop", gotdbot.ButtonStyleDefault{})
+	pauseBtn := cb("II", "play_pause", gotdbot.ButtonStyleDefault{})
+	resumeBtn := cb("▷", "play_resume", gotdbot.ButtonStyleDefault{})
+
+	switch mode {
+	case "play", "resume":
+		return &gotdbot.ReplyMarkupInlineKeyboard{
+			Rows: [][]gotdbot.InlineKeyboardButton{
+				{skipBtn, stopBtn, pauseBtn},
+				{webAppBtn},
+			},
+		}
+	case "pause":
+		return &gotdbot.ReplyMarkupInlineKeyboard{
+			Rows: [][]gotdbot.InlineKeyboardButton{
+				{skipBtn, stopBtn, resumeBtn},
+				{webAppBtn},
+			},
+		}
+	default:
+		return &gotdbot.ReplyMarkupInlineKeyboard{
+			Rows: [][]gotdbot.InlineKeyboardButton{
+				{webAppBtn},
+			},
+		}
+	}
+}
