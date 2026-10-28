@@ -14,7 +14,7 @@ import (
 )
 
 // GetLoggerStatus retrieves the logger status for a given bot (enabled by default).
-func (db *Database) GetLoggerStatus() bool {
+func (db *Database) GetLoggerStatus(_ ...int64) bool {
 	if cached, ok := db.loggerCache.Get("logger"); ok {
 		return cached
 	}

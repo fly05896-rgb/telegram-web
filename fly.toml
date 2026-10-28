@@ -7,6 +7,7 @@ primary_region = "ams"
 [env]
   PORT = "8080"
   WEBAPP_SHORT_NAME = "web"
+  WEBAPP_URL = "https://anniexboda-c6a2yw.fly.dev"
 
 [http_service]
   internal_port = 8080

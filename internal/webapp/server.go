@@ -19,7 +19,6 @@ import (
 	"time"
 
 	td "github.com/AshokShau/gotdbot"
-	tgwebapp "github.com/AshokShau/gotdbot/webapp"
 	"golang.org/x/net/websocket"
 )
 
@@ -249,18 +248,18 @@ func isAuthorizedOrGuestRequest(r *http.Request) bool {
 	if strings.HasPrefix(initDataRaw, "uid:") {
 		uidStr := strings.TrimSpace(strings.TrimPrefix(initDataRaw, "uid:"))
 		if uid, err := strconv.ParseInt(uidStr, 10, 64); err == nil && uid > 0 {
-			if config.IsDevID(uid) || (db.Instance != nil && db.Instance.IsUserExist(uid)) {
+			if config.IsDevID(uid) {
 				return true
+			}
+			if db.Instance != nil {
+				if exists, exErr := db.Instance.IsUserExist(uid); exErr == nil && exists {
+					return true
+				}
 			}
 		}
 	}
 	initData, valid := verifyTelegramInitData(initDataRaw, config.Token)
-	if valid && initData != nil && initData.User != nil && initData.User.ID > 0 {
-		return true
-	}
-	// Avoid unused import warning for tgwebapp
-	var _ *tgwebapp.WebAppInitData
-	return false
+	return valid && initData != nil && initData.User != nil && initData.User.ID > 0
 }
 
 func searchHandler(w http.ResponseWriter, r *http.Request) {

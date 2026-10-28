@@ -71,7 +71,7 @@ func parseVerifiedTelegramIDData(bot *td.Client, raw string, roomID int64) (*tgw
 			firstName = u.FirstName
 			lastName = u.LastName
 			username = u.Username
-		} else if db.Instance.IsUserExist(uid) {
+		} else if exists, exErr := db.Instance.IsUserExist(uid); exErr == nil && exists {
 			found = true
 		}
 	}

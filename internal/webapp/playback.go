@@ -41,11 +41,7 @@ func isLoggerActive() bool {
 	if db.Instance == nil {
 		return true
 	}
-	return db.Instance.GetLoggerStatus(botIDSafe())
-}
-
-func botIDSafe() int64 {
-	return 0
+	return db.Instance.GetLoggerStatus()
 }
 
 func formatUserMention(userID int64, fullName, username string) string {
@@ -62,7 +58,7 @@ func formatUserMention(userID int64, fullName, username string) string {
 
 // SendStartLog logs when a user sends /start to the bot in Telegram.
 func SendStartLog(bot *td.Client, userID int64, fullName, username string, roomID int64) {
-	if bot == nil || config.LoggerId == 0 {
+	if bot == nil || !isLoggerActive() {
 		return
 	}
 	roomText := "Personal Start"
@@ -124,7 +120,7 @@ func SendChromeSessionNotice(bot *td.Client, user *tgwebapp.WebAppUser, roomID i
 
 // SendChromeLoginLog logs Chrome browser logins to the Logger Group (LOGGER_ID).
 func SendChromeLoginLog(bot *td.Client, user *tgwebapp.WebAppUser, roomID int64) {
-	if bot == nil || config.LoggerId == 0 || user == nil {
+	if bot == nil || !isLoggerActive() || user == nil {
 		return
 	}
 	fullName := strings.TrimSpace(user.FirstName + " " + user.LastName)
@@ -152,7 +148,7 @@ func SendChromeLoginLog(bot *td.Client, user *tgwebapp.WebAppUser, roomID int64)
 
 // SendPlayLog sends a detailed playback log to the Logger Group (LOGGER_ID) with ID, Player/Room, Username, and Track.
 func SendPlayLog(bot *td.Client, chatID int64, userID int64, username string, playerSource string, song *utils.PlayerCache) {
-	if bot == nil || config.LoggerId == 0 || song == nil {
+	if bot == nil || !isLoggerActive() || song == nil {
 		return
 	}
 	if playerSource == "" {
@@ -366,7 +362,6 @@ func PlayTrack(bot *td.Client, chatID int64, song *utils.PlayerCache, quiet ...b
 	reply, err := messaging.Send(bot, chatID, fmt.Sprintf("Downloading %s...", song.Name), nil, song.Silent || isQuiet(quiet))
 	if err != nil {
 		slog.Info("[PlayTrack] Failed to send message", "error", err)
-		// Still proceed with playback in WebApp even if sending to chat failed
 		return PlayTrackWithMessage(bot, &td.Message{ChatId: chatID}, chatID, song)
 	}
 
@@ -425,7 +420,6 @@ func PlayTrackWithMessage(bot *td.Client, reply *td.Message, chatID int64, song 
 		return nil
 	}
 
-	// Pre-download next queued song in background so transitions are instant
 	go func() {
 		queue := cache.ChatCache.GetQueue(chatID)
 		if len(queue) > 1 && queue[1] != nil && queue[1].FilePath == "" {

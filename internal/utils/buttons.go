@@ -260,6 +260,14 @@ func BuildBotStartPlayerLink(botUsername string, roomID int64) string {
 	return fmt.Sprintf("https://t.me/%s?start=room_%s", strings.TrimPrefix(botUsername, "@"), strconv.FormatInt(roomID, 10))
 }
 
+func BuildChromeRoomLink(roomID int64) string {
+	baseURL := strings.TrimRight(config.WebAppURL, "/")
+	if baseURL == "" {
+		baseURL = "https://anniexboda-c6a2yw.fly.dev"
+	}
+	return fmt.Sprintf("%s/room?room=%d", baseURL, roomID)
+}
+
 func webAppButton(botUsername string, chatID int64) gotdbot.InlineKeyboardButton {
 	baseURL := strings.TrimRight(config.WebAppURL, "/")
 	if chatID > 0 && baseURL != "" {

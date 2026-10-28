@@ -47,7 +47,7 @@ func detectDefaultWebAppURL() string {
 	if renderURL := strings.TrimSpace(os.Getenv("RENDER_EXTERNAL_URL")); renderURL != "" {
 		return strings.TrimRight(renderURL, "/")
 	}
-	return "https://telegram-web-player.fly.dev"
+	return "https://anniexboda-c6a2yw.fly.dev"
 }
 
 var (
@@ -75,7 +75,7 @@ var (
 	SupportGroup     = getEnv("SUPPORT_GROUP", defaultSupportGroup)
 	SupportChannel   = getEnv("SUPPORT_CHANNEL", defaultSupportChannel)
 	StartImg         = getEnv("START_IMG", defaultStartImage)
-	PrivacyPolicyURL = getEnv("PRIVACY_POLICY_URL", "https://telegram-web-player.fly.dev/privacy")
+	PrivacyPolicyURL = getEnv("PRIVACY_POLICY_URL", "https://anniexboda-c6a2yw.fly.dev/privacy")
 
 	Port            = getEnv("PORT", "8080")
 	WebAppURL       = detectDefaultWebAppURL()
