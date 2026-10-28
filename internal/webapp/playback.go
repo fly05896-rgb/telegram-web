@@ -100,17 +100,14 @@ func SendChromeSessionNotice(bot *td.Client, user *tgwebapp.WebAppUser, roomID i
 	if fullName == "" {
 		fullName = "Listener"
 	}
-	roomLink := utils.BuildChromeRoomLink(roomID)
 	text := fmt.Sprintf(
-		"<b>تم ربط مشغل متصفح كروم بنجاح</b>\n\n"+
+		"<b>تم ربط مشغل الويب بنجاح</b>\n\n"+
 			"<b>المستخدم:</b> %s\n"+
 			"<b>الأيدي:</b> <code>%d</code>\n"+
-			"<b>معرف الغرفة / المشغل:</b> <code>%d</code>\n"+
-			"<b>رابط المشغل:</b> %s",
+			"<b>معرف الغرفة / المشغل:</b> <code>%d</code>",
 		html.EscapeString(fullName),
 		user.ID,
 		roomID,
-		html.EscapeString(roomLink),
 	)
 	_, _ = bot.SendMessage(user.ID, text, &td.SendMessageOpts{
 		ParseMode:             "HTML",

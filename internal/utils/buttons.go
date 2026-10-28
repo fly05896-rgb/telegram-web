@@ -51,7 +51,6 @@ var DevsBtn = cb("Devs", "help_devs", gotdbot.ButtonStyleDefault{})
 var PlaylistBtn = cb("Playlist", "help_playlist", gotdbot.ButtonStyleDefault{})
 var AutoplayBtn = cb("Autoplay", "help_autoplay", gotdbot.ButtonStyleDefault{})
 
-var SourceCodeBtn = url("Source Code", "https://github.com/AshokShau/telegram-web-player", gotdbot.ButtonStylePrimary{})
 var channelBtn = url("Updates", config.SupportChannel, gotdbot.ButtonStyleDefault{})
 var groupBtn = url("Group", config.SupportGroup, gotdbot.ButtonStyleDefault{})
 
@@ -191,7 +190,7 @@ func BackHelpMenuKeyboard() *gotdbot.ReplyMarkupInlineKeyboard {
 	return &gotdbot.ReplyMarkupInlineKeyboard{
 		Rows: [][]gotdbot.InlineKeyboardButton{
 			{HelpBtn, HomeBtn},
-			{CloseBtn, SourceCodeBtn},
+			{CloseBtn},
 		},
 	}
 }
@@ -206,16 +205,11 @@ func AddMeMarkup(username string, userID ...int64) *gotdbot.ReplyMarkupInlineKey
 	var rows [][]gotdbot.InlineKeyboardButton
 	if len(userID) > 0 && userID[0] > 0 {
 		rows = append(rows, []gotdbot.InlineKeyboardButton{webAppButton(username, userID[0])})
-		if config.WebAppURL != "" {
-			chromeURL := fmt.Sprintf("%s/room?room=%d&uid=%d", strings.TrimRight(config.WebAppURL, "/"), userID[0], userID[0])
-			rows = append(rows, []gotdbot.InlineKeyboardButton{url("Open in Chrome / Browser", chromeURL, gotdbot.ButtonStyleDefault{})})
-		}
 	}
 	rows = append(rows,
 		[]gotdbot.InlineKeyboardButton{addMeBtn},
 		[]gotdbot.InlineKeyboardButton{HelpBtn},
 		[]gotdbot.InlineKeyboardButton{channelBtn, groupBtn},
-		[]gotdbot.InlineKeyboardButton{SourceCodeBtn},
 	)
 
 	return &gotdbot.ReplyMarkupInlineKeyboard{
@@ -230,10 +224,6 @@ func RoomJoinMarkup(botUsername string, roomID, userID int64) *gotdbot.ReplyMark
 		webAppTarget := fmt.Sprintf("%s/room?startapp=%d&chat_id=%d&room=%d&uid=%d", baseURL, roomID, roomID, roomID, userID)
 		rows = append(rows, []gotdbot.InlineKeyboardButton{
 			webAppNativeBtn("Open TeleMusic Web Player", webAppTarget, gotdbot.ButtonStylePrimary{}),
-		})
-		chromeTarget := fmt.Sprintf("%s/room?room=%d&uid=%d", baseURL, roomID, userID)
-		rows = append(rows, []gotdbot.InlineKeyboardButton{
-			url("Open in Chrome / Browser (Background Audio)", chromeTarget, gotdbot.ButtonStyleDefault{}),
 		})
 	} else {
 		rows = append(rows, []gotdbot.InlineKeyboardButton{
@@ -261,11 +251,7 @@ func BuildBotStartPlayerLink(botUsername string, roomID int64) string {
 }
 
 func BuildChromeRoomLink(roomID int64) string {
-	baseURL := strings.TrimRight(config.WebAppURL, "/")
-	if baseURL == "" {
-		baseURL = "https://anniexboda-c6a2yw.fly.dev"
-	}
-	return fmt.Sprintf("%s/room?room=%d", baseURL, roomID)
+	return fmt.Sprintf("Room ID: %d", roomID)
 }
 
 func webAppButton(botUsername string, chatID int64) gotdbot.InlineKeyboardButton {
@@ -292,38 +278,26 @@ func WebAppControlButtons(mode string, botUsername string, chatID int64) *gotdbo
 	pauseBtn := cb("II", "play_pause", gotdbot.ButtonStyleDefault{})
 	resumeBtn := cb("▷", "play_resume", gotdbot.ButtonStyleDefault{})
 
-	var extraRow []gotdbot.InlineKeyboardButton
-	if baseURL := strings.TrimRight(config.WebAppURL, "/"); baseURL != "" {
-		chromeLink := fmt.Sprintf("%s/room?room=%d", baseURL, chatID)
-		extraRow = []gotdbot.InlineKeyboardButton{url("Open in Chrome", chromeLink, gotdbot.ButtonStyleDefault{})}
-	}
-
 	switch mode {
 	case "play", "resume":
-		rows := [][]gotdbot.InlineKeyboardButton{
-			{skipBtn, stopBtn, pauseBtn},
-			{webAppBtn},
+		return &gotdbot.ReplyMarkupInlineKeyboard{
+			Rows: [][]gotdbot.InlineKeyboardButton{
+				{skipBtn, stopBtn, pauseBtn},
+				{webAppBtn},
+			},
 		}
-		if len(extraRow) > 0 {
-			rows = append(rows, extraRow)
-		}
-		return &gotdbot.ReplyMarkupInlineKeyboard{Rows: rows}
 	case "pause":
-		rows := [][]gotdbot.InlineKeyboardButton{
-			{skipBtn, stopBtn, resumeBtn},
-			{webAppBtn},
+		return &gotdbot.ReplyMarkupInlineKeyboard{
+			Rows: [][]gotdbot.InlineKeyboardButton{
+				{skipBtn, stopBtn, resumeBtn},
+				{webAppBtn},
+			},
 		}
-		if len(extraRow) > 0 {
-			rows = append(rows, extraRow)
-		}
-		return &gotdbot.ReplyMarkupInlineKeyboard{Rows: rows}
 	default:
-		rows := [][]gotdbot.InlineKeyboardButton{
-			{webAppBtn},
+		return &gotdbot.ReplyMarkupInlineKeyboard{
+			Rows: [][]gotdbot.InlineKeyboardButton{
+				{webAppBtn},
+			},
 		}
-		if len(extraRow) > 0 {
-			rows = append(rows, extraRow)
-		}
-		return &gotdbot.ReplyMarkupInlineKeyboard{Rows: rows}
 	}
 }

@@ -639,7 +639,7 @@ func handleClientMessage(bot *td.Client, client *Client, msg ClientMessage) {
 		}
 		settings := partnerInvites.details(client.RoomID)
 		settings["url"] = utils.BuildBotStartPlayerLink(username, client.RoomID)
-		settings["chromeUrl"] = utils.BuildChromeRoomLink(client.RoomID)
+		settings["chromeUrl"] = utils.BuildBotStartPlayerLink(username, client.RoomID)
 		settings["expiresAt"], settings["userLimit"] = expiresAt, userLimit
 		payload, _ := json.Marshal(map[string]any{"event": "partner_invite_created", "requestId": msg.RequestID,
 			"data": settings})

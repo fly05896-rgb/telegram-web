@@ -38,16 +38,22 @@ func detectDefaultDownloadsDir() string {
 }
 
 func detectDefaultWebAppURL() string {
-	if u := strings.TrimSpace(os.Getenv("WEBAPP_URL")); u != "" {
-		return strings.TrimRight(u, "/")
+	flyApp := strings.TrimSpace(os.Getenv("FLY_APP_NAME"))
+	u := strings.TrimRight(strings.TrimSpace(os.Getenv("WEBAPP_URL")), "/")
+	// Always prefer the live FLY_APP_NAME domain on Fly.io so deleted/old Fly app names never cause ERR_NAME_NOT_RESOLVED
+	if flyApp != "" && (u == "" || strings.HasSuffix(u, ".fly.dev")) {
+		return "https://" + flyApp + ".fly.dev"
 	}
-	if flyApp := strings.TrimSpace(os.Getenv("FLY_APP_NAME")); flyApp != "" {
+	if u != "" {
+		return u
+	}
+	if flyApp != "" {
 		return "https://" + flyApp + ".fly.dev"
 	}
 	if renderURL := strings.TrimSpace(os.Getenv("RENDER_EXTERNAL_URL")); renderURL != "" {
 		return strings.TrimRight(renderURL, "/")
 	}
-	return "https://anniexboda-c6a2yw.fly.dev"
+	return "https://telegram-web-osliyw.fly.dev"
 }
 
 var (
@@ -75,7 +81,7 @@ var (
 	SupportGroup     = getEnv("SUPPORT_GROUP", defaultSupportGroup)
 	SupportChannel   = getEnv("SUPPORT_CHANNEL", defaultSupportChannel)
 	StartImg         = getEnv("START_IMG", defaultStartImage)
-	PrivacyPolicyURL = getEnv("PRIVACY_POLICY_URL", "https://anniexboda-c6a2yw.fly.dev/privacy")
+	PrivacyPolicyURL = getEnv("PRIVACY_POLICY_URL", "")
 
 	Port            = getEnv("PORT", "8080")
 	WebAppURL       = detectDefaultWebAppURL()

@@ -93,8 +93,18 @@ export function playbackPosition(room = state.room, now = Date.now() + state.off
     const position = Math.max(0, (Number(pb?.position) || 0) + elapsed);
     return room.track.duration > 0 ? Math.min(position, room.track.duration) : position;
 }
-export async function lyricsAPI(url, signal) {
-    const response = await fetch(`/api/lyrics?url=${encodeURIComponent(url)}`, { signal, headers: { 'X-Telegram-Init-Data': launch.initData } });
+export async function lyricsAPI(trackOrUrl, signal) {
+    const params = new URLSearchParams();
+    if (trackOrUrl && typeof trackOrUrl === 'object') {
+        if (trackOrUrl.url) params.set('url', trackOrUrl.url);
+        if (trackOrUrl.title) params.set('title', trackOrUrl.title);
+        if (trackOrUrl.artist) params.set('artist', trackOrUrl.artist);
+        if (trackOrUrl.id) params.set('id', String(trackOrUrl.id));
+        if (trackOrUrl.duration) params.set('duration', String(Math.floor(Number(trackOrUrl.duration) || 0)));
+    } else if (typeof trackOrUrl === 'string') {
+        params.set('url', trackOrUrl);
+    }
+    const response = await fetch(`/api/lyrics?${params.toString()}`, { signal, headers: { 'X-Telegram-Init-Data': launch.initData } });
     if (response.status === 422) return { unsupported: true };
     if (!response.ok) throw new Error('Lyrics could not load. Try again.');
     return response.json();

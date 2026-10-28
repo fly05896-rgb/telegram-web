@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 func lyricsHandler(w http.ResponseWriter, r *http.Request) {
@@ -18,12 +20,24 @@ func lyricsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "valid Telegram authentication required", http.StatusUnauthorized)
 		return
 	}
-	trackURL := r.URL.Query().Get("url")
-	if trackURL == "" || len(trackURL) > 2048 {
-		http.Error(w, "track URL required", http.StatusBadRequest)
+	q := r.URL.Query()
+	trackURL := strings.TrimSpace(q.Get("url"))
+	title := strings.TrimSpace(q.Get("title"))
+	artist := strings.TrimSpace(q.Get("artist"))
+	trackID := strings.TrimSpace(q.Get("id"))
+	durInt, _ := strconv.Atoi(strings.TrimSpace(q.Get("duration")))
+
+	if trackURL == "" && title == "" && trackID == "" {
+		http.Error(w, "track URL or title required", http.StatusBadRequest)
 		return
 	}
-	lyrics, err := downloader.FetchLyrics(r.Context(), trackURL)
+	lyrics, err := downloader.FetchLyricsWithMeta(r.Context(), downloader.LyricsQuery{
+		URL:      trackURL,
+		Title:    title,
+		Artist:   artist,
+		TrackID:  trackID,
+		Duration: int32(durInt),
+	})
 	if errors.Is(err, downloader.ErrLyricsUnsupported) {
 		http.Error(w, "lyrics are not available for this track URL", http.StatusUnprocessableEntity)
 		return

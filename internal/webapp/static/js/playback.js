@@ -161,6 +161,13 @@ export function createPlayback(audio) {
         emit('tick');
     }
     const clock = setInterval(tick, 250);
+    const fastLyricsClock = setInterval(() => {
+        if (disposed || !state.room?.track) return;
+        const pos = !audio.paused && audio.readyState >= 2 && Number.isFinite(audio.currentTime) && audio.currentTime > 0
+            ? audio.currentTime
+            : playbackPosition();
+        emit('progress', pos);
+    }, 50);
     audio.addEventListener('loadedmetadata', synchronize);
     audio.addEventListener('canplay', () => { clearBuffering(); seekToRoom(); play(); });
     audio.addEventListener('seeked', () => { observedTime = audio.currentTime; clearBuffering(); play(); });
@@ -187,7 +194,7 @@ export function createPlayback(audio) {
     on('room', synchronize); on('clock', seekToRoom); on('listening', synchronize);
     on('transport-lost', () => { status('Reconnecting your player…'); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) synchronize(); });
-    on('dispose', () => { disposed = true; clearInterval(clock); destroySource(); audio.pause(); });
+    on('dispose', () => { disposed = true; clearInterval(clock); clearInterval(fastLyricsClock); destroySource(); audio.pause(); });
     window.addEventListener('pageshow', e => { if (e.persisted) synchronize(); });
     return {
         join,

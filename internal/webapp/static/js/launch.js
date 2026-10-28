@@ -124,12 +124,12 @@ export function readLaunch(telegram) {
     }
 
     let startParam = cleanRoomParam(
+        params.get('room') ||
+        params.get('chat_id') ||
+        params.get('startapp') ||
+        params.get('tgWebAppStartParam') ||
         signed.get('start_param') ||
         (nativeData && !transferred ? telegram?.initDataUnsafe?.start_param : '') ||
-        params.get('tgWebAppStartParam') ||
-        params.get('startapp') ||
-        params.get('chat_id') ||
-        params.get('room') ||
         source?.roomId ||
         user.id ||
         savedUid ||

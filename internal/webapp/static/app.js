@@ -1,10 +1,10 @@
-import { state, allowedDuration, hasQueueSpace, validPasscode, platform, telegram, hasSession, preferences, on, notify, haptic, send, connect, initializePlatform, requestWriteAccess, openInBrowser, logoutChromeTelegramSession, searchAPI, toggleFullscreen, isFullscreen, canControl, canPlay, canManageSettings, formatTime, safeURL } from './js/core.js?v=88';
-import { createPlayback } from './js/playback.js?v=88';
+import { state, allowedDuration, hasQueueSpace, validPasscode, platform, telegram, hasSession, preferences, on, notify, haptic, send, connect, initializePlatform, requestWriteAccess, openInBrowser, logoutChromeTelegramSession, searchAPI, toggleFullscreen, isFullscreen, canControl, canPlay, canManageSettings, formatTime, safeURL } from './js/core.js?v=99';
+import { createPlayback } from './js/playback.js?v=99';
 import { createVoice } from './js/voice.js?v=88';
 import { createChoiceScreens } from './js/choices.js?v=88';
 import { createSessionScreen } from './js/session.js?v=89';
 import { createAtmosphere, setTrackArtwork, fallbackArtwork } from './js/artwork.js?v=88';
-import { createLyrics } from './js/lyrics.js?v=90';
+import { createLyrics } from './js/lyrics.js?v=99';
 import { element, icon, actionButton, empty, trackCount, normalizeSong, avatar, loadingState } from './js/ui.js?v=88';
 import { createTrackRenderer } from './js/tracks.js?v=88';
 import { createAppearance } from './js/appearance.js?v=88';
@@ -302,10 +302,19 @@ function updateBackButton() {
     if (!platform.supportsNativeBack) return;
     if (choices.isOpen() || dom['action-dialog'].open || state.expandedPlayer || state.view !== 'home' || state.chat.open || state.voice.open || !dom['listeners-panel'].hidden) telegram.BackButton?.show(); else telegram.BackButton?.hide();
 }
-function expandPlayer(trigger) {
-    if (state.expandedPlayer) return;
+function expandPlayer(trigger, tab = 'artwork') {
+    if (state.expandedPlayer) {
+        if (tab) setExpandedTab(tab);
+        return;
+    }
     choices.close(); closeListeners();
-    expandedFocus = trigger instanceof HTMLElement ? trigger : document.activeElement; state.expandedPlayer = true; dom['player'].classList.add('is-expanded');
+    expandedFocus = trigger instanceof HTMLElement ? trigger : document.activeElement;
+    state.expandedPlayer = true;
+    dom['player'].dataset.expandedTab = tab || 'artwork';
+    for (const btn of document.querySelectorAll('#player-dock-tabs .dock-tab-btn')) {
+        btn.classList.toggle('is-active', btn.dataset.tab === dom['player'].dataset.expandedTab);
+    }
+    dom['player'].classList.add('is-expanded');
     for (const node of document.querySelectorAll('.topbar,.sidebar,#workspace,#queue-rail,.mobile-nav')) node.inert = true;
     dom['player'].setAttribute('tabindex', '-1'); dom['player'].focus(); renderPlayerView(); renderListening(); updateBackButton();
 }
@@ -1012,19 +1021,13 @@ function renderExpandedStages() {
 
 function setExpandedTab(tab) {
     const validTabs = ['lyrics', 'users', 'queue', 'artwork'];
-    const current = dom['player'].dataset.expandedTab || 'queue';
-    const next = validTabs.includes(tab) ? (current === tab && tab !== 'artwork' ? 'artwork' : tab) : 'queue';
+    const current = dom['player'].dataset.expandedTab || 'artwork';
+    const next = validTabs.includes(tab) ? (current === tab && tab !== 'artwork' ? 'artwork' : tab) : 'artwork';
     dom['player'].dataset.expandedTab = next;
     for (const btn of document.querySelectorAll('#player-dock-tabs .dock-tab-btn')) {
         btn.classList.toggle('is-active', btn.dataset.tab === next);
     }
-    if (next === 'lyrics') {
-        const previewBtn = document.getElementById('lyrics-preview');
-        if (previewBtn) previewBtn.click();
-    } else if (dom['player'].classList.contains('has-lyrics')) {
-        const toggleBtn = document.getElementById('lyrics-toggle');
-        if (toggleBtn) toggleBtn.click();
-    }
+    lyrics.viewChanged();
     renderExpandedStages();
 }
 
@@ -1072,10 +1075,9 @@ const actions = {
     'sheet-share-room': () => {
         closePlayerMenu();
         const url = getRoomShareURL();
-        const chromeUrl = getChromeRoomShareURL();
         const share = new URL('https://t.me/share/url');
         share.searchParams.set('url', url);
-        share.searchParams.set('text', `Listen with me on TeleMusic! (Chrome link: ${chromeUrl})`);
+        share.searchParams.set('text', 'Listen with me on TeleMusic!');
         if (platform.isTelegramWebApp && telegram?.openTelegramLink) telegram.openTelegramLink(share.href);
         else window.open(share.href, '_blank', 'noopener,noreferrer');
     },
