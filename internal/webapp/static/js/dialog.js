@@ -1,5 +1,5 @@
-import { element } from './ui.js?v=88';
-import { state, haptic } from './core.js?v=88';
+import { element } from './ui.js?v=2026';
+import { state, haptic } from './core.js?v=2026';
 
 export function createActionDialog(dom, choices, onChange) {
     const surface = dom['action-dialog'];

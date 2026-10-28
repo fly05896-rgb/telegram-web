@@ -13,8 +13,20 @@ import (
 	"sync"
 
 	td "github.com/AshokShau/gotdbot"
+	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v4"
 )
+
+var defaultICEServers = []webrtc.ICEServer{
+	{
+		URLs: []string{
+			"stun:stun.l.google.com:19302",
+			"stun:stun1.l.google.com:19302",
+			"stun:stun2.l.google.com:19302",
+			"stun:stun.cloudflare.com:3478",
+		},
+	},
+}
 
 type VCParticipantInfo struct {
 	UserID         int64  `json:"userId"`
@@ -36,9 +48,6 @@ type VCRoomState struct {
 	Participants        []VCParticipantInfo `json:"participants"`
 }
 
-// Room.mu owns participant identity and permission fields. signalMu owns all
-// signaling resources. Membership writers release Room.mu before acquiring
-// signalMu; signaling may read membership while holding signalMu.
 type VCParticipant struct {
 	UserID             int64
 	FirstName          string
@@ -88,7 +97,21 @@ func newVCManager() *VCManager {
 	if err := engine.RegisterDefaultCodecs(); err != nil {
 		log.Error("[VC] Register codecs", "error", err)
 	}
-	return &VCManager{rooms: make(map[int64]*VCRoom), webrtcAPI: webrtc.NewAPI(webrtc.WithMediaEngine(engine))}
+	interceptorRegistry := &interceptor.Registry{}
+	if err := webrtc.RegisterDefaultInterceptors(engine, interceptorRegistry); err != nil {
+		log.Error("[VC] Register interceptors", "error", err)
+	}
+	settingEngine := webrtc.SettingEngine{}
+	settingEngine.SetSRTPReplayProtectionWindow(512)
+
+	return &VCManager{
+		rooms: make(map[int64]*VCRoom),
+		webrtcAPI: webrtc.NewAPI(
+			webrtc.WithMediaEngine(engine),
+			webrtc.WithInterceptorRegistry(interceptorRegistry),
+			webrtc.WithSettingEngine(settingEngine),
+		),
+	}
 }
 func (m *VCManager) GetOrCreateRoom(roomID int64) *VCRoom {
 	m.mu.Lock()
@@ -158,7 +181,16 @@ func (m *VCManager) JoinVC(bot *td.Client, client *Client) {
 		return
 	}
 	room := m.GetOrCreateRoom(client.RoomID)
-	track, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, fmt.Sprintf("voice_%d", userID), fmt.Sprintf("user_%d", userID))
+	track, err := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{
+			MimeType:    webrtc.MimeTypeOpus,
+			ClockRate:   48000,
+			Channels:    2,
+			SDPFmtpLine: "minptime=10;useinbandfec=1",
+		},
+		fmt.Sprintf("voice_%d", userID),
+		fmt.Sprintf("user_%d", userID),
+	)
 	if err != nil {
 		sendError(client, "Could not create a voice track.")
 		return
@@ -202,7 +234,6 @@ func (m *VCManager) leaveParticipant(bot *td.Client, room *VCRoom, p *VCParticip
 	room.mu.Unlock()
 	p.close()
 	m.reconcileRoom(room)
-	// Keep empty room permissions; a subsequent join must not reset an admin's decision.
 	m.BroadcastVCState(bot, room.RoomID)
 }
 func (m *VCManager) reconcileRoom(room *VCRoom) {
@@ -223,8 +254,6 @@ func voiceMessage(client *Client, event string, data any) {
 	}
 }
 
-// reconcileSendersLocked works against the latest complete room track set, so
-// joins/leaves during an outstanding offer are coalesced rather than skipped.
 func (m *VCManager) renegotiateUser(room *VCRoom, p *VCParticipant) {
 	p.signalMu.Lock()
 	defer p.signalMu.Unlock()
@@ -286,7 +315,6 @@ func (m *VCManager) renegotiateUser(room *VCRoom, p *VCParticipant) {
 	voiceMessage(p.Client, "vc_offer", map[string]any{"sdp": offer.SDP})
 }
 func drainRTCP(sender *webrtc.RTPSender) {
-	// Pion requires feedback to be consumed. Closing the peer ends this reader.
 	buffer := make([]byte, 1500)
 	for {
 		if _, _, err := sender.Read(buffer); err != nil {
@@ -308,7 +336,9 @@ func (m *VCManager) HandleClientOffer(bot *td.Client, client *Client, sdp string
 	pc := p.PeerConnection
 	if pc == nil {
 		var err error
-		pc, err = m.webrtcAPI.NewPeerConnection(webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}})
+		pc, err = m.webrtcAPI.NewPeerConnection(webrtc.Configuration{
+			ICEServers: defaultICEServers,
+		})
 		if err != nil {
 			p.signalMu.Unlock()
 			sendError(client, "Could not create a voice connection.")
@@ -326,7 +356,6 @@ func (m *VCManager) HandleClientOffer(bot *td.Client, client *Client, sdp string
 		})
 		pc.OnConnectionStateChange(func(connection webrtc.PeerConnectionState) {
 			if connection == webrtc.PeerConnectionStateFailed {
-				// Ownership check in LeaveVC protects a newer session from old callbacks.
 				go m.leaveParticipant(bot, room, p)
 			}
 		})
@@ -474,8 +503,6 @@ func (m *VCManager) AdminMuteUser(bot *td.Client, client *Client, target int64, 
 	m.BroadcastVCState(bot, client.RoomID)
 }
 
-// AdminSetJoinMuted governs future joins. Disabling the rule also removes
-// existing admin mutes; each listener still chooses whether to enable their mic.
 func (m *VCManager) AdminSetJoinMuted(bot *td.Client, client *Client, muted bool) {
 	if !voiceAdmin(client) {
 		return

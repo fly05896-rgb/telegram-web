@@ -19,8 +19,15 @@ import (
 	td "github.com/AshokShau/gotdbot"
 )
 
-// seekHandler handles the /seek command.
 func seekHandler(c *td.Client, m *td.Message) error {
+	return handleSeekDirection(c, m, false)
+}
+
+func seekBackHandler(c *td.Client, m *td.Message) error {
+	return handleSeekDirection(c, m, true)
+}
+
+func handleSeekDirection(c *td.Client, m *td.Message, backward bool) error {
 	if !adminMode(c, m) {
 		return td.EndGroups
 	}
@@ -39,7 +46,7 @@ func seekHandler(c *td.Client, m *td.Message) error {
 
 	args := Args(m)
 	if args == "" {
-		_, _ = m.ReplyText(c, "<b>Usage:</b> /seek duration\n<b>Example:</b> <code>/seek 15</code>", replyOpts)
+		_, _ = m.ReplyText(c, "<b>Usage:</b> /seek [seconds] or /seekback [seconds]\n<b>Example:</b> <code>/seek 15</code>", replyOpts)
 		return nil
 	}
 
@@ -60,11 +67,20 @@ func seekHandler(c *td.Client, m *td.Message) error {
 		return nil
 	}
 
-	currDur := float64(currDurInt)
-	toSeek := int32(currDur) + int32(seekTime)
-	if toSeek >= playingSong.Duration {
-		_, _ = m.ReplyText(c, fmt.Sprintf("You cannot seek beyond the track duration. Maximum allowed is %s.", utils.SecToMin(playingSong.Duration)), nil)
-		return nil
+	currDur := int32(currDurInt)
+	var toSeek int32
+	if backward {
+		if currDur-int32(seekTime) <= 5 {
+			toSeek = 0
+		} else {
+			toSeek = currDur - int32(seekTime)
+		}
+	} else {
+		toSeek = currDur + int32(seekTime)
+		if playingSong.Duration > 0 && toSeek >= playingSong.Duration {
+			_, _ = m.ReplyText(c, fmt.Sprintf("You cannot seek beyond the track duration. Maximum allowed is %s.", utils.SecToMin(playingSong.Duration)), nil)
+			return nil
+		}
 	}
 
 	if _, err = webapp.Manager.SeekRoom(c, chatID, float64(toSeek)); err != nil {
@@ -72,6 +88,6 @@ func seekHandler(c *td.Client, m *td.Message) error {
 		return nil
 	}
 
-	_, _ = messaging.Reply(c, m, fmt.Sprintf("<b>Stream skipped %s and started from %s seconds by</b> %s", utils.SecToMin(int32(seekTime)), utils.SecToMin(toSeek), firstName(c, m)), replyOpts)
+	_, _ = messaging.Reply(c, m, fmt.Sprintf("<b>Stream seeked to %s by</b> %s", utils.SecToMin(toSeek), firstName(c, m)), replyOpts)
 	return nil
 }

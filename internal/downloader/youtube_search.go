@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,10 +30,114 @@ const (
 	ytBaseURL         = "https://www.youtube.com"
 	ytWatchURL        = ytBaseURL + "/watch?v="
 	ytAPIKey          = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-	ytClientVer       = "2.20250101.01.00"
-	defaultUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-	requestRetryDelay = 120 * time.Millisecond
+	ytClientVer       = "2.20260708.00.00"
+	defaultUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	requestRetryDelay = 80 * time.Millisecond
 )
+
+type cachedTrackEntry struct {
+	track     utils.GetUrlTrack
+	expiresAt time.Time
+}
+
+var (
+	visitorDataMu sync.RWMutex
+	visitorData   string
+
+	metaCacheMu sync.RWMutex
+	metaCache   = make(map[string]cachedTrackEntry)
+)
+
+func getVisitorData() string {
+	visitorDataMu.RLock()
+	defer visitorDataMu.RUnlock()
+	return visitorData
+}
+
+func setVisitorData(v string) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return
+	}
+	visitorDataMu.Lock()
+	visitorData = v
+	visitorDataMu.Unlock()
+}
+
+// ensureVisitorData fetches a fresh cookie-free visitorData token from /youtubei/v1/guide (2026 AnnieXMedia engine)
+func ensureVisitorData(ctx context.Context) string {
+	if v := getVisitorData(); v != "" {
+		return v
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 3500*time.Millisecond)
+	defer cancel()
+
+	payload := map[string]any{
+		"context": map[string]any{
+			"client": map[string]any{
+				"clientName":    "WEB",
+				"clientVersion": ytClientVer,
+				"hl":            "en",
+				"gl":            "US",
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, ytBaseURL+"/youtubei/v1/guide?prettyPrint=false", bytes.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", defaultUserAgent)
+	req.Header.Set("Origin", ytBaseURL)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	var data map[string]any
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&data)
+	_ = resp.Body.Close()
+
+	if v := digStr(data, "responseContext", "visitorData"); v != "" {
+		setVisitorData(v)
+		return v
+	}
+	return ""
+}
+
+// GetCachedTrackMeta returns a cached GetUrlTrack if available and not expired.
+func GetCachedTrackMeta(videoID string) (utils.GetUrlTrack, bool) {
+	if len(videoID) != 11 {
+		return utils.GetUrlTrack{}, false
+	}
+	metaCacheMu.RLock()
+	entry, ok := metaCache[videoID]
+	metaCacheMu.RUnlock()
+	if !ok || time.Now().After(entry.expiresAt) {
+		return utils.GetUrlTrack{}, false
+	}
+	return entry.track, true
+}
+
+// StoreTrackMeta caches a GetUrlTrack in memory for 1 hour.
+func StoreTrackMeta(track utils.GetUrlTrack) {
+	if len(track.Id) != 11 || track.Title == "" {
+		return
+	}
+	metaCacheMu.Lock()
+	if len(metaCache) > 2000 {
+		metaCache = make(map[string]cachedTrackEntry)
+	}
+	metaCache[track.Id] = cachedTrackEntry{
+		track:     track,
+		expiresAt: time.Now().Add(time.Hour),
+	}
+	metaCacheMu.Unlock()
+}
 
 type ytClientProfile struct {
 	ClientName    string
@@ -41,7 +146,6 @@ type ytClientProfile struct {
 	Origin        string
 	UserAgent     string
 
-	// Optional fields used by native/mobile client contexts.
 	OsName      string
 	OsVersion   string
 	AndroidSDK  int
@@ -60,75 +164,70 @@ var ytProfiles = []ytClientProfile{
 		UserAgent:     defaultUserAgent,
 	},
 	{
+		ClientName:    "VISIONOS",
+		ClientVersion: "1.02",
+		ClientID:      "101",
+		DeviceMake:    "Apple",
+		DeviceModel:   "RealityDevice17,1",
+		OsName:        "visionOS",
+		OsVersion:     "26.5.23O471",
+		UserAgent:     fastVisionUA,
+	},
+	{
 		ClientName:    "ANDROID",
 		ClientVersion: "21.26.364",
 		ClientID:      "3",
 		OsName:        "Android",
 		OsVersion:     "11",
 		AndroidSDK:    30,
-		UserAgent:     "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip",
-	},
-	{
-		ClientName:    "VISIONOS",
-		ClientVersion: "1.02",
-		ClientID:      "101",
-		UserAgent:     "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
-	},
-	{
-		ClientName:    "MWEB",
-		ClientVersion: "2.20250101.01.00",
-		ClientID:      "2",
-		Origin:        "https://m.youtube.com",
-		UserAgent:     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1",
+		UserAgent:     fastAndroidUA,
 	},
 	{
 		ClientName:    "WEB_REMIX",
-		ClientVersion: "1.20250101.01.00",
+		ClientVersion: "1.20260101.01.00",
 		ClientID:      "67",
 		Origin:        "https://music.youtube.com",
 		UserAgent:     defaultUserAgent,
 	},
 	{
-		ClientName:    "TVHTML5",
-		ClientVersion: "7.20250101.00.00",
-		ClientID:      "7",
-		Origin:        ytBaseURL,
-		UserAgent:     "Mozilla/5.0 (SmartHub; SMART-TV; U; Linux/SmartTV) AppleWebKit/537.42 (KHTML, like Gecko) SmartTV Safari/537.42",
-	},
-	{
-		ClientName:    "IOS",
-		ClientVersion: "19.09.3",
-		ClientID:      "5",
-		OsName:        "iPhone OS",
-		OsVersion:     "17.4.1.21E237",
-		DeviceMake:    "Apple",
-		DeviceModel:   "iPhone16,2",
-		UserAgent:     "com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_4_1 like Mac OS X; en_US)",
-	},
-	{
-		ClientName:    "ANDROID_MUSIC",
-		ClientVersion: "7.03.51",
-		ClientID:      "21",
-		OsName:        "Android",
-		OsVersion:     "14",
-		AndroidSDK:    34,
-		UserAgent:     "com.google.android.apps.youtube.music/7.03.51 (Linux; U; Android 14) gzip",
+		ClientName:    "MWEB",
+		ClientVersion: "2.20260101.01.00",
+		ClientID:      "2",
+		Origin:        "https://m.youtube.com",
+		UserAgent:     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
 	},
 	{
 		ClientName:    "WEB_EMBEDDED_PLAYER",
-		ClientVersion: "1.20250101.01.00",
+		ClientVersion: "1.20260101.01.00",
 		ClientID:      "56",
 		Origin:        ytBaseURL,
-		UserAgent:     defaultUserAgent,
-		EmbedURL:      ytBaseURL + "/",
+		UserAgent:     fastWebEmbeddedUA,
+		EmbedURL:      "https://www.reddit.com/",
+	},
+	{
+		ClientName:    "TVHTML5",
+		ClientVersion: "7.20260101.00.00",
+		ClientID:      "7",
+		Origin:        ytBaseURL,
+		UserAgent:     fastTVSamsungUA,
 	},
 	{
 		ClientName:    "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
 		ClientVersion: "2.0",
 		ClientID:      "85",
 		Origin:        ytBaseURL,
-		UserAgent:     "Mozilla/5.0 (SmartHub; SMART-TV; U; Linux/SmartTV) AppleWebKit/537.42 (KHTML, like Gecko) SmartTV Safari/537.42",
-		EmbedURL:      ytBaseURL + "/",
+		UserAgent:     fastTVSamsungUA,
+		EmbedURL:      "https://www.reddit.com/",
+	},
+	{
+		ClientName:    "IOS",
+		ClientVersion: "19.45.4",
+		ClientID:      "5",
+		OsName:        "iPhone OS",
+		OsVersion:     "17.5.1.21F90",
+		DeviceMake:    "Apple",
+		DeviceModel:   "iPhone16,2",
+		UserAgent:     "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X; en_US)",
 	},
 }
 
@@ -143,14 +242,17 @@ var (
 	playlistIDRe2                  = regexp.MustCompile(`list=([0-9A-Za-z_-]+)`)
 )
 
-// setYTHeadersWithProfile sets standard headers for YouTube InnerTube API
+// setYTHeadersWithProfile sets standard headers for YouTube InnerTube API including X-Goog-Visitor-Id
 func setYTHeadersWithProfile(req *http.Request, prof ytClientProfile) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", prof.UserAgent)
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9,ar;q=0.8")
 	req.Header.Set("X-YouTube-Client-Name", prof.ClientID)
 	req.Header.Set("X-YouTube-Client-Version", prof.ClientVersion)
+	if v := getVisitorData(); v != "" {
+		req.Header.Set("X-Goog-Visitor-Id", v)
+	}
 
 	if prof.Origin != "" {
 		req.Header.Set("Origin", prof.Origin)
@@ -163,10 +265,15 @@ func setYTHeadersWithProfile(req *http.Request, prof ytClientProfile) {
 
 func ytContextWithProfile(prof ytClientProfile) map[string]any {
 	clientCtx := map[string]any{
-		"clientName":    prof.ClientName,
-		"clientVersion": prof.ClientVersion,
-		"hl":            "en",
-		"gl":            "US",
+		"clientName":       prof.ClientName,
+		"clientVersion":    prof.ClientVersion,
+		"hl":               "en",
+		"gl":               "US",
+		"timeZone":         "UTC",
+		"utcOffsetMinutes": 0,
+	}
+	if v := getVisitorData(); v != "" {
+		clientCtx["visitorData"] = v
 	}
 	if prof.OsName != "" {
 		clientCtx["osName"] = prof.OsName
@@ -189,7 +296,11 @@ func ytContextWithProfile(prof ytClientProfile) map[string]any {
 		innerContext["thirdParty"] = map[string]any{"embedUrl": prof.EmbedURL}
 	}
 
-	return map[string]any{"context": innerContext}
+	return map[string]any{
+		"context":        innerContext,
+		"contentCheckOk": true,
+		"racyCheckOk":    true,
+	}
 }
 
 func formatYTErr(action string, statusCode int, statusText string, body []byte) error {
@@ -206,6 +317,10 @@ func formatYTErr(action string, statusCode int, statusText string, body []byte) 
 }
 
 func ytRequest(ctx context.Context, path string, extraFields map[string]any, accept func(map[string]any) bool) (map[string]any, error) {
+	if getVisitorData() == "" {
+		ensureVisitorData(ctx)
+	}
+
 	var lastErr error
 	searchRequest := path == "/youtubei/v1/search"
 	profiles := ytProfiles
@@ -233,7 +348,7 @@ func ytRequest(ctx context.Context, path string, extraFields map[string]any, acc
 			return nil, fmt.Errorf("marshal payload: %w", err)
 		}
 
-		endpoint := ytBaseURL + path + "?key=" + ytAPIKey
+		endpoint := ytBaseURL + path + "?prettyPrint=false&key=" + ytAPIKey
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewBuffer(body))
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
@@ -259,6 +374,10 @@ func ytRequest(ctx context.Context, path string, extraFields map[string]any, acc
 		if err != nil {
 			lastErr = fmt.Errorf("decode response (%s): %w", prof.ClientName, err)
 			continue
+		}
+
+		if v := digStr(out, "responseContext", "visitorData"); v != "" && getVisitorData() == "" {
+			setVisitorData(v)
 		}
 
 		if accept != nil && accept(out) {
@@ -308,7 +427,9 @@ func searchYouTube(query string, limit int, parentContext ...context.Context) ([
 	})
 
 	if len(tracks) > 0 {
-		// Pre-download the top search result into /dev/shm RAM disk in the background
+		for _, tr := range tracks {
+			StoreTrackMeta(tr)
+		}
 		if tracks[0].Duration > 0 && tracks[0].Duration <= 900 {
 			go PrefetchYouTubeAudio(tracks[0].Id)
 		}
@@ -395,16 +516,22 @@ func parseResults(node any, tracks *[]utils.GetUrlTrack, limit int) {
 				if id == "" || title == "" || durationText == "" {
 					continue
 				}
-				*tracks = append(*tracks, utils.GetUrlTrack{
+				thumb := safeString(dig(vr, "thumbnail", "thumbnails", 0, "url"))
+				if thumb == "" {
+					thumb = "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg"
+				}
+				tr := utils.GetUrlTrack{
 					Id:        id,
 					Url:       ytWatchURL + id,
 					Title:     title,
-					Thumbnail: safeString(dig(vr, "thumbnail", "thumbnails", 0, "url")),
+					Thumbnail: thumb,
 					Duration:  parseDuration(durationText),
 					Views:     safeString(dig(vr, "viewCountText", "simpleText")),
 					Channel:   safeString(dig(vr, "ownerText", "runs", 0, "text")),
 					Platform:  utils.YouTube,
-				})
+				}
+				StoreTrackMeta(tr)
+				*tracks = append(*tracks, tr)
 				continue
 			}
 
@@ -415,7 +542,6 @@ func parseResults(node any, tracks *[]utils.GetUrlTrack, limit int) {
 	}
 }
 
-// isLiveNow reports whether a videoRenderer map carries the LIVE_NOW badge.
 func isLiveNow(vr map[string]any) bool {
 	badges, ok := vr["badges"].([]any)
 	if !ok {
@@ -433,7 +559,6 @@ func isLiveNow(vr map[string]any) bool {
 	return false
 }
 
-// getYouTubeTitleFromOEmbed fetches the video title using YouTube's oEmbed API.
 func getYouTubeTitleFromOEmbed(videoID string) (string, error) {
 	apiURL := fmt.Sprintf("https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=%s&format=json", videoID)
 
@@ -462,6 +587,10 @@ func getYouTubeTitleFromOEmbed(videoID string) (string, error) {
 }
 
 func getYouTubeVideo(ctx context.Context, videoID string) (*utils.PlatformTracks, error) {
+	if cached, ok := GetCachedTrackMeta(videoID); ok {
+		return &utils.PlatformTracks{Results: []utils.GetUrlTrack{cached}}, nil
+	}
+
 	resp, err := ytRequest(ctx, "/youtubei/v1/player", map[string]any{"videoId": videoID}, func(data map[string]any) bool {
 		return digStr(data, "videoDetails", "videoId") != ""
 	})
@@ -473,6 +602,7 @@ func getYouTubeVideo(ctx context.Context, videoID string) (*utils.PlatformTracks
 	if video.Id == "" {
 		return nil, errors.New("video not found")
 	}
+	StoreTrackMeta(video)
 	return &utils.PlatformTracks{Results: []utils.GetUrlTrack{video}}, nil
 }
 
@@ -485,7 +615,12 @@ func getYouTubePlaylist(ctx context.Context, playlistID string) (*utils.Platform
 	if err != nil {
 		return nil, err
 	}
-
+	for _, tr := range tracks.Results {
+		StoreTrackMeta(tr)
+	}
+	if len(tracks.Results) > 0 {
+		go PrefetchYouTubeAudio(tracks.Results[0].Id)
+	}
 	return tracks, nil
 }
 
@@ -496,10 +631,13 @@ func GetYouTubeMixPlaylist(ctx context.Context, playlistID string) (*utils.Platf
 	}
 
 	videos := extractMixPlaylistVideos(resp)
-	return buildTrackList(videos, mapMixVideo), nil
+	list := buildTrackList(videos, mapMixVideo)
+	for _, tr := range list.Results {
+		StoreTrackMeta(tr)
+	}
+	return list, nil
 }
 
-// buildTrackList converts raw renderer maps to MusicTrack, dropping empty IDs.
 func buildTrackList(videos []map[string]any, mapper func(map[string]any) utils.GetUrlTrack) *utils.PlatformTracks {
 	out := make([]utils.GetUrlTrack, 0, len(videos))
 	for _, v := range videos {
@@ -539,11 +677,15 @@ func mapMixVideo(v map[string]any) utils.GetUrlTrack {
 
 func mapPlayerToTrack(src map[string]any) utils.GetUrlTrack {
 	id := digStr(src, "videoDetails", "videoId")
+	thumb := pickYTPlayerThumb(src)
+	if thumb == "" && id != "" {
+		thumb = "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg"
+	}
 	return utils.GetUrlTrack{
 		Id:        id,
 		Title:     digStr(src, "videoDetails", "title"),
 		Url:       ytWatchURL + id,
-		Thumbnail: pickYTPlayerThumb(src),
+		Thumbnail: thumb,
 		Channel:   digStr(src, "videoDetails", "author"),
 		Duration:  atoi(digStr(src, "videoDetails", "lengthSeconds")),
 		Views:     digStr(src, "videoDetails", "viewCount"),
@@ -571,7 +713,6 @@ func extractPlaylistVideos(src map[string]any) []map[string]any {
 				}
 				return
 			}
-			// Traverse only playlist contents, preserving array order across layouts.
 			keys := slices.Sorted(maps.Keys(value))
 			for _, key := range keys {
 				visit(value[key])
@@ -582,7 +723,6 @@ func extractPlaylistVideos(src map[string]any) []map[string]any {
 	return out
 }
 
-// Normalize the current WEB playlist representation to the legacy track mapper.
 func normalizePlaylistLockup(video map[string]any) map[string]any {
 	if digStr(video, "contentType") != "LOCKUP_CONTENT_TYPE_VIDEO" || digStr(video, "contentId") == "" {
 		return nil
@@ -630,7 +770,6 @@ func pickYTPlayerThumb(src map[string]any) string {
 	return lastThumbURL(digArray(src, "videoDetails", "thumbnail", "thumbnails"))
 }
 
-// lastThumbURL returns the URL of the last (highest-res) thumbnail, or "".
 func lastThumbURL(thumbs []map[string]any) string {
 	if len(thumbs) == 0 {
 		return ""
@@ -646,13 +785,14 @@ func normalizeYouTubeURL(rawURL string) string {
 		id = extractSegment(rawURL, "youtu.be/")
 	case strings.Contains(rawURL, "youtube.com/shorts/"):
 		id = extractSegment(rawURL, "youtube.com/shorts/")
+	case strings.Contains(rawURL, "youtube.com/live/"):
+		id = extractSegment(rawURL, "youtube.com/live/")
 	default:
 		return rawURL
 	}
 	return ytWatchURL + id
 }
 
-// extractSegment splits on sep, then strips query string and fragment.
 func extractSegment(u, sep string) string {
 	parts := strings.SplitN(u, sep, 2)
 	if len(parts) < 2 {
@@ -665,10 +805,14 @@ func extractSegment(u, sep string) string {
 }
 
 func extractVideoID(u string) string {
-	if m := videoIDRe1.FindStringSubmatch(u); len(m) > 1 {
+	s := strings.TrimSpace(u)
+	if len(s) == 11 && !strings.Contains(s, "/") && !strings.Contains(s, " ") {
+		return s
+	}
+	if m := videoIDRe1.FindStringSubmatch(s); len(m) > 1 {
 		return m[1]
 	}
-	if m := videoIDRe2.FindStringSubmatch(u); len(m) > 1 {
+	if m := videoIDRe2.FindStringSubmatch(s); len(m) > 1 {
 		return m[1]
 	}
 	return ""
@@ -694,7 +838,6 @@ func parseYTDuration(v map[string]any) int32 {
 	return 0
 }
 
-// parseDuration handles "H:MM:SS" / "M:SS" / "SS" colon-separated strings.
 func parseDuration(s string) int32 {
 	parts := strings.Split(s, ":")
 	var total, mul int32 = 0, 1
@@ -705,7 +848,6 @@ func parseDuration(s string) int32 {
 	return total
 }
 
-// parseTimeToSeconds is like parseDuration but uses strconv and returns 0 on any error.
 func parseTimeToSeconds(s string) int32 {
 	parts := strings.Split(s, ":")
 	total := 0

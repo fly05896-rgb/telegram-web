@@ -38,7 +38,7 @@ var (
 	lyricsCache   = make(map[string]*Lyrics)
 
 	noiseBracketRe = regexp.MustCompile(`(?i)[\(\[\{][^\)\]\}]*(?:official|video|audio|lyric|lyrics|clip|hd|4k|hq|visualizer|remaster|live|mv|كليب|رسمي|فيديو|كلمات|حصري|حصريا|نسخة|أغنية|اغنية)[^\)\]\}]*[\)\]\}]`)
-	noiseTailRe    = regexp.MustCompile(`(?i)(?:official\s+(?:music\s+)?video|official\s+audio|lyric\s+video|lyrics|prod\.?\s+by.*|ft\.?.*|feat\.?.*|#\S+)`)
+	noiseTailRe    = regexp.MustCompile(`(?i)\b(?:official\s+(?:music\s+)?video|official\s+audio|lyric\s+video|lyrics|prod\.?\s+by.*|ft\.?.*|feat\.?.*|#\S+)\b`)
 	artistNoiseRe  = regexp.MustCompile(`(?i)(?:\s*-\s*topic|\s*vevo|\s*official(?:\s+channel)?)$`)
 	multiSpaceRe   = regexp.MustCompile(`\s{2,}`)
 )
@@ -101,10 +101,8 @@ func cleanTrackMetadata(rawTitle, rawArtist string) (cleanTitle, cleanArtist, fu
 }
 
 func synthesizeLRCFromPlain(plain string, durationSec int32) string {
-	rawLines := strings.Split(strings.ReplaceAll(plain, "
-", "
-"), "
-")
+	normalized := strings.ReplaceAll(plain, "\r\n", "\n")
+	rawLines := strings.Split(normalized, "\n")
 	var lines []string
 	for _, l := range rawLines {
 		trimmed := strings.TrimSpace(l)
@@ -128,8 +126,7 @@ func synthesizeLRCFromPlain(plain string, durationSec int32) string {
 		sec := startOffset + float64(i)*step
 		mins := int(sec) / 60
 		rem := sec - float64(mins*60)
-		fmt.Fprintf(&sb, "[%02d:%05.2f] %s
-", mins, rem, line)
+		fmt.Fprintf(&sb, "[%02d:%05.2f] %s\n", mins, rem, line)
 	}
 	return strings.TrimSpace(sb.String())
 }
@@ -278,7 +275,6 @@ func fetchFromYouTubeCaptions(ctx context.Context, videoID string, durationSec i
 
 	tracks := digArray(data, "captions", "playerCaptionsTracklistRenderer", "captionTracks")
 	if len(tracks) > 0 {
-		// Pick manual caption track first (preferring ar or en), otherwise first available
 		var chosenURL string
 		for _, ct := range tracks {
 			u := safeString(ct["baseUrl"])
@@ -326,8 +322,7 @@ func fetchFromYouTubeCaptions(ctx context.Context, videoID string, durationSec i
 						for _, seg := range ev.Segs {
 							lineBuilder.WriteString(seg.UTF8)
 						}
-						line := strings.TrimSpace(strings.ReplaceAll(lineBuilder.String(), "
-", " "))
+						line := strings.TrimSpace(strings.ReplaceAll(lineBuilder.String(), "\n", " "))
 						if line == "" || line == lastLine || line == "[Music]" || line == "[موسيقى]" {
 							continue
 						}
@@ -335,10 +330,8 @@ func fetchFromYouTubeCaptions(ctx context.Context, videoID string, durationSec i
 						sec := float64(ev.TStartMs) / 1000.0
 						mins := int(sec) / 60
 						rem := sec - float64(mins*60)
-						fmt.Fprintf(&lrcBuf, "[%02d:%05.2f] %s
-", mins, rem, line)
-						txtBuf.WriteString(line + "
-")
+						fmt.Fprintf(&lrcBuf, "[%02d:%05.2f] %s\n", mins, rem, line)
+						txtBuf.WriteString(line + "\n")
 						lineCount++
 					}
 					if lineCount >= 3 {
@@ -352,13 +345,10 @@ func fetchFromYouTubeCaptions(ctx context.Context, videoID string, durationSec i
 		}
 	}
 
-	// Check if shortDescription contains song lyrics
 	if vDesc != "" {
 		var descLines []string
-		for _, line := range strings.Split(strings.ReplaceAll(vDesc, "
-", "
-"), "
-") {
+		normalizedDesc := strings.ReplaceAll(vDesc, "\r\n", "\n")
+		for _, line := range strings.Split(normalizedDesc, "\n") {
 			trimmed := strings.TrimSpace(line)
 			if trimmed == "" || strings.Contains(trimmed, "http://") || strings.Contains(trimmed, "https://") ||
 				strings.HasPrefix(trimmed, "#") || strings.Contains(strings.ToLower(trimmed), "subscribe") ||
@@ -371,8 +361,7 @@ func fetchFromYouTubeCaptions(ctx context.Context, videoID string, durationSec i
 			}
 		}
 		if len(descLines) >= 6 {
-			plain := strings.Join(descLines, "
-")
+			plain := strings.Join(descLines, "\n")
 			return &Lyrics{
 				Text: plain,
 				LRC:  synthesizeLRCFromPlain(plain, durationSec),
@@ -414,7 +403,6 @@ func FetchLyricsWithMeta(ctx context.Context, q LyricsQuery) (*Lyrics, error) {
 	rawTitle := strings.TrimSpace(q.Title)
 	rawArtist := strings.TrimSpace(q.Artist)
 
-	// If title is missing and we have a YouTube video ID, fetch title via oEmbed or Innertube
 	var ytCaptionResult *Lyrics
 	if len(videoID) == 11 {
 		var ytTitle, ytAuthor string
@@ -429,19 +417,16 @@ func FetchLyricsWithMeta(ctx context.Context, q LyricsQuery) (*Lyrics, error) {
 
 	cleanTitle, cleanArtist, fullQuery := cleanTrackMetadata(rawTitle, rawArtist)
 
-	// 1. Try LRCLIB for studio-grade synced LRC lyrics
 	if cleanTitle != "" || fullQuery != "" {
 		if lrcRes := fetchFromLRCLIB(ctx, cleanTitle, cleanArtist, fullQuery, rawTitle, q.Duration); lrcRes != nil && (lrcRes.LRC != "" || lrcRes.Text != "") {
 			return saveCache(lrcRes), nil
 		}
 	}
 
-	// 2. Use YouTube Innertube Timed Captions / Description if available
 	if ytCaptionResult != nil && (ytCaptionResult.LRC != "" || ytCaptionResult.Text != "") {
 		return saveCache(ytCaptionResult), nil
 	}
 
-	// 3. Optional external API fallback if APIKey is configured
 	if q.URL != "" && config.ApiUrl != "" && config.ApiKey != "" {
 		if canonical, err := LyricsURL(q.URL); err == nil {
 			reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -470,7 +455,6 @@ func FetchLyricsWithMeta(ctx context.Context, q LyricsQuery) (*Lyrics, error) {
 	return &Lyrics{}, nil
 }
 
-// FetchLyrics keeps backwards compatibility with callers passing only trackURL.
 func FetchLyrics(ctx context.Context, trackURL string) (*Lyrics, error) {
 	return FetchLyricsWithMeta(ctx, LyricsQuery{URL: trackURL})
 }

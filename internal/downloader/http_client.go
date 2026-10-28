@@ -30,10 +30,15 @@ import (
 
 const (
 	defaultRequestTimeout = 30 * time.Second
-	defaultConnectTimeout = 15 * time.Second
+	defaultConnectTimeout = 10 * time.Second
 	maxRetries            = 2
-	initialBackoff        = 1 * time.Second
+	initialBackoff        = 800 * time.Millisecond
 )
+
+var ipv4Dialer = &net.Dialer{
+	Timeout:   defaultConnectTimeout,
+	KeepAlive: 60 * time.Second,
+}
 
 var client = &http.Client{
 	Timeout: defaultRequestTimeout,
@@ -42,22 +47,23 @@ var client = &http.Client{
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
-
 		ResponseHeaderTimeout: defaultRequestTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
-		DialContext: (&net.Dialer{
-			Timeout:   defaultConnectTimeout,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		IdleConnTimeout:     90 * time.Second,
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		MaxConnsPerHost:     20,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if conn, err := ipv4Dialer.DialContext(ctx, "tcp4", addr); err == nil {
+				return conn, nil
+			}
+			return ipv4Dialer.DialContext(ctx, network, addr)
+		},
+		IdleConnTimeout:     120 * time.Second,
+		MaxIdleConns:        256,
+		MaxIdleConnsPerHost: 64,
+		MaxConnsPerHost:     128,
 		DisableCompression:  false,
 		ForceAttemptHTTP2:   true,
 	},
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 2 {
+		if len(via) >= 5 {
 			return fmt.Errorf("too many redirects (%d)", len(via))
 		}
 		return nil
@@ -71,7 +77,7 @@ func sendRequest(method, fullURL string, body io.Reader, headers map[string]stri
 		return nil, fmt.Errorf("failed to create base request: %w", err)
 	}
 
-	baseReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+	baseReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 	baseReq.Header.Set("Accept", "*/*")
 
 	for k, v := range headers {
@@ -114,7 +120,7 @@ func sendRequest(method, fullURL string, body io.Reader, headers map[string]stri
 				slog.Info("Temporary error on", "attempt", attempt+1, "maxRetries", maxRetries, "error", reqErr)
 				continue
 			}
-			break // Do not retry on permanent errors
+			break
 		}
 	}
 
@@ -164,7 +170,7 @@ func determineFilename(urlStr, contentDisp string) string {
 	return filepath.Join(config.DownloadsDir, generateUniqueName(".tmp"))
 }
 
-// writeToFile writes data from an io.Reader to a specified file.
+// writeToFile writes data from an io.Reader to a specified file using a 256KB buffer.
 func writeToFile(filename string, data io.Reader) error {
 	out, err := os.Create(filename)
 	if err != nil {
@@ -174,7 +180,8 @@ func writeToFile(filename string, data io.Reader) error {
 		_ = out.Close()
 	}(out)
 
-	if _, err := io.Copy(out, data); err != nil {
+	buf := make([]byte, 256*1024)
+	if _, err := io.CopyBuffer(out, data, buf); err != nil {
 		return fmt.Errorf("failed to write to the file: %w", err)
 	}
 
@@ -194,6 +201,7 @@ func downloadFile(urlStr, fileName string, overwrite bool) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create the request: %w", err)
 	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -203,7 +211,7 @@ func downloadFile(urlStr, fileName string, overwrite bool) (string, error) {
 		_ = Body.Close()
 	}(resp.Body)
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return "", fmt.Errorf("unexpected status code received: %d", resp.StatusCode)
 	}
 
@@ -213,7 +221,7 @@ func downloadFile(urlStr, fileName string, overwrite bool) (string, error) {
 
 	if !overwrite {
 		if _, err := os.Stat(fileName); err == nil {
-			return fileName, nil // File already exists, no need to download again.
+			return fileName, nil
 		}
 	}
 

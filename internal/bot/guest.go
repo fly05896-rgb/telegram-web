@@ -9,8 +9,12 @@
 package bot
 
 import (
+	"ashokshau/tg-web/internal/downloader"
+	"ashokshau/tg-web/internal/utils"
 	"errors"
 	"fmt"
+	"html"
+	"strings"
 
 	td "github.com/AshokShau/gotdbot"
 )
@@ -44,4 +48,82 @@ func guestHandler(c *td.Client, u *td.UpdateNewGuestQuery) error {
 		},
 	})
 	return err
+}
+
+// inlineQueryHandler powers fast inline YouTube search (@BotUsername query) ported from inline.py.
+func inlineQueryHandler(c *td.Client, u *td.UpdateNewInlineQuery) error {
+	if u == nil {
+		return nil
+	}
+	query := strings.TrimSpace(u.Query)
+	if query == "" {
+		return u.Answer(c, []td.InputInlineQueryResult{}, &td.AnswerInlineQueryOpts{CacheTime: 10})
+	}
+
+	wrapper := downloader.NewDlWrapper(query)
+	res, err := wrapper.Search()
+	if err != nil || res == nil || len(res.Results) == 0 {
+		return u.Answer(c, []td.InputInlineQueryResult{}, &td.AnswerInlineQueryOpts{CacheTime: 5})
+	}
+
+	botName := "TeleMusic"
+	if c.Me() != nil && c.Me().FirstName != "" {
+		botName = c.Me().FirstName
+	}
+
+	limit := len(res.Results)
+	if limit > 15 {
+		limit = 15
+	}
+
+	var results []td.InputInlineQueryResult
+	for i, item := range res.Results[:limit] {
+		title := strings.TrimSpace(item.Title)
+		if title == "" {
+			title = "Unknown Track"
+		}
+		durStr := utils.SecToMin(item.Duration)
+		views := item.Views
+		if views == "" {
+			views = "YouTube"
+		}
+		channel := item.Channel
+		if channel == "" {
+			channel = "YouTube"
+		}
+		link := item.Url
+		if link == "" && item.Id != "" {
+			link = "https://www.youtube.com/watch?v=" + item.Id
+		}
+		thumb := item.Thumbnail
+		if idx := strings.Index(thumb, "?"); idx > 0 {
+			thumb = thumb[:idx]
+		}
+
+		description := fmt.Sprintf("%s | %s دقيقة | %s", views, durStr, channel)
+		rawMsg := fmt.Sprintf(
+			"الـعـنـوان : %s\nالـمـدة : %s دقـيـقـة\nالـمـشـاهـدات : %s\nالـقـنـاة : %s\nالـرابـط : %s\n\n➻ بـحـث الانـلايـن بـواسـطـة %s",
+			html.UnescapeString(title),
+			durStr,
+			views,
+			channel,
+			link,
+			botName,
+		)
+
+		results = append(results, &td.InputInlineQueryResultArticle{
+			Id:           fmt.Sprintf("yt_%d_%s", i, item.Id),
+			Title:        title,
+			Description:  description,
+			ThumbnailUrl: thumb,
+			Url:          link,
+			InputMessageContent: &td.InputMessageText{
+				Text: &td.FormattedText{
+					Text: rawMsg,
+				},
+			},
+		})
+	}
+
+	return u.Answer(c, results, &td.AnswerInlineQueryOpts{CacheTime: 30})
 }

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,14 +31,22 @@ type youTubeData struct {
 	Patterns map[string]*regexp.Regexp
 }
 
+type inflightDl struct {
+	done chan struct{}
+	path string
+	err  error
+}
+
 var (
-	prefetchMu       sync.Mutex
-	prefetchInFlight = make(map[string]bool)
+	inflightMu        sync.Mutex
+	inflightDownloads = make(map[string]*inflightDl)
 )
 
 const (
-	fastAndroidUA = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip"
-	fastVisionUA  = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+	fastAndroidUA     = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip"
+	fastVisionUA      = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+	fastWebEmbeddedUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)"
+	fastTVSamsungUA   = "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1"
 )
 
 var youtubePatterns = map[string]*regexp.Regexp{
@@ -83,26 +92,37 @@ func findCachedYouTubeFile(videoID string) string {
 	return ""
 }
 
+// deduplicateYouTubeDownload ensures concurrent requests for the same videoID share a single download.
+func deduplicateYouTubeDownload(key string, fn func() (string, error)) (string, error) {
+	inflightMu.Lock()
+	if existing, ok := inflightDownloads[key]; ok {
+		inflightMu.Unlock()
+		<-existing.done
+		return existing.path, existing.err
+	}
+	call := &inflightDl{done: make(chan struct{})}
+	inflightDownloads[key] = call
+	inflightMu.Unlock()
+
+	defer func() {
+		close(call.done)
+		inflightMu.Lock()
+		delete(inflightDownloads, key)
+		inflightMu.Unlock()
+	}()
+
+	call.path, call.err = fn()
+	return call.path, call.err
+}
+
 // PrefetchYouTubeAudio downloads a YouTube track into the RAM disk in the background.
 func PrefetchYouTubeAudio(videoID string) {
 	if len(videoID) != 11 || findCachedYouTubeFile(videoID) != "" {
 		return
 	}
-	prefetchMu.Lock()
-	if prefetchInFlight[videoID] {
-		prefetchMu.Unlock()
-		return
-	}
-	prefetchInFlight[videoID] = true
-	prefetchMu.Unlock()
-
-	defer func() {
-		prefetchMu.Lock()
-		delete(prefetchInFlight, videoID)
-		prefetchMu.Unlock()
-	}()
-
-	_, _ = downloadFastInnertube(videoID, false)
+	_, _ = deduplicateYouTubeDownload("yt:"+videoID+":audio", func() (string, error) {
+		return downloadFastInnertube(videoID, false)
+	})
 }
 
 type fastStreamFormat struct {
@@ -112,28 +132,61 @@ type fastStreamFormat struct {
 	ContentLength int64
 }
 
+func parseClenFromURL(rawURL string) int64 {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return 0
+	}
+	if clenStr := u.Query().Get("clen"); clenStr != "" {
+		if n, pErr := strconv.ParseInt(clenStr, 10, 64); pErr == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
 func extractFastInnertubeStream(ctx context.Context, videoID string, video bool) (*fastStreamFormat, error) {
+	if getVisitorData() == "" {
+		ensureVisitorData(ctx)
+	}
+	vData := getVisitorData()
+
 	type clientSpec struct {
-		name      string
-		userAgent string
-		context   map[string]any
+		name               string
+		clientID           string
+		clientVer          string
+		userAgent          string
+		preferProgressive  bool
+		context            map[string]any
 	}
 	clients := []clientSpec{
 		{
-			name:      "VISIONOS",
-			userAgent: fastVisionUA,
+			name:              "VISIONOS",
+			clientID:          "101",
+			clientVer:         "1.02",
+			userAgent:         fastVisionUA,
+			preferProgressive: false,
 			context: map[string]any{
 				"client": map[string]any{
-					"clientName":    "VISIONOS",
-					"clientVersion": "1.02",
-					"hl":            "en",
-					"gl":            "US",
+					"clientName":       "VISIONOS",
+					"clientVersion":    "1.02",
+					"deviceMake":       "Apple",
+					"deviceModel":      "RealityDevice17,1",
+					"osName":           "visionOS",
+					"osVersion":        "26.5.23O471",
+					"hl":               "en",
+					"gl":               "US",
+					"timeZone":         "UTC",
+					"utcOffsetMinutes": 0,
 				},
 			},
 		},
 		{
-			name:      "ANDROID",
-			userAgent: fastAndroidUA,
+			name:              "ANDROID",
+			clientID:          "3",
+			clientVer:         "21.26.364",
+			userAgent:         fastAndroidUA,
+			preferProgressive: true, // Golden Rule from Youtube.py: itag=18 in formats is 100% exempt from GVS PO Token on ANDROID!
 			context: map[string]any{
 				"client": map[string]any{
 					"clientName":        "ANDROID",
@@ -143,6 +196,26 @@ func extractFastInnertubeStream(ctx context.Context, videoID string, video bool)
 					"osVersion":         "11",
 					"hl":                "en",
 					"gl":                "US",
+					"timeZone":          "UTC",
+					"utcOffsetMinutes":  0,
+				},
+			},
+		},
+		{
+			name:              "WEB_EMBEDDED_PLAYER",
+			clientID:          "56",
+			clientVer:         "1.20260101.01.00",
+			userAgent:         fastWebEmbeddedUA,
+			preferProgressive: true,
+			context: map[string]any{
+				"client": map[string]any{
+					"clientName":    "WEB_EMBEDDED_PLAYER",
+					"clientVersion": "1.20260101.01.00",
+					"hl":            "en",
+					"gl":            "US",
+				},
+				"thirdParty": map[string]any{
+					"embedUrl": "https://www.reddit.com/",
 				},
 			},
 		},
@@ -150,9 +223,19 @@ func extractFastInnertubeStream(ctx context.Context, videoID string, video bool)
 
 	endpoint := "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
 	for _, spec := range clients {
+		if vData != "" {
+			if cMap, ok := spec.context["client"].(map[string]any); ok {
+				cMap["visitorData"] = vData
+			}
+		}
 		payload := map[string]any{
-			"videoId":        videoID,
-			"context":        spec.context,
+			"videoId": videoID,
+			"context": spec.context,
+			"playbackContext": map[string]any{
+				"contentPlaybackContext": map[string]any{
+					"html5Preference": "HTML5_PREF_WANTS",
+				},
+			},
 			"contentCheckOk": true,
 			"racyCheckOk":    true,
 		}
@@ -161,7 +244,7 @@ func extractFastInnertubeStream(ctx context.Context, videoID string, video bool)
 			continue
 		}
 
-		reqCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		reqCtx, cancel := context.WithTimeout(ctx, 4500*time.Millisecond)
 		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 		if err != nil {
 			cancel()
@@ -169,6 +252,12 @@ func extractFastInnertubeStream(ctx context.Context, videoID string, video bool)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", spec.userAgent)
+		req.Header.Set("X-YouTube-Client-Name", spec.clientID)
+		req.Header.Set("X-YouTube-Client-Version", spec.clientVer)
+		req.Header.Set("Origin", "https://www.youtube.com")
+		if vData != "" {
+			req.Header.Set("X-Goog-Visitor-Id", vData)
+		}
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -183,6 +272,15 @@ func extractFastInnertubeStream(ctx context.Context, videoID string, video bool)
 			continue
 		}
 
+		if newVData := digStr(data, "responseContext", "visitorData"); newVData != "" && vData == "" {
+			vData = newVData
+			setVisitorData(newVData)
+		}
+
+		if tr := mapPlayerToTrack(data); tr.Id != "" && tr.Title != "" {
+			StoreTrackMeta(tr)
+		}
+
 		if digStr(data, "playabilityStatus", "status") != "OK" {
 			continue
 		}
@@ -192,16 +290,18 @@ func extractFastInnertubeStream(ctx context.Context, videoID string, video bool)
 			continue
 		}
 
+		progFormats := digArray(streamingData, "formats")
+		adaptFormats := digArray(streamingData, "adaptiveFormats")
+
 		var allFormats []map[string]any
-		if !video {
-			allFormats = append(allFormats, digArray(streamingData, "adaptiveFormats")...)
-		}
-		allFormats = append(allFormats, digArray(streamingData, "formats")...)
-		if video {
-			allFormats = append(allFormats, digArray(streamingData, "adaptiveFormats")...)
+		if video || spec.preferProgressive {
+			allFormats = append(allFormats, progFormats...)
+			allFormats = append(allFormats, adaptFormats...)
+		} else {
+			allFormats = append(allFormats, adaptFormats...)
+			allFormats = append(allFormats, progFormats...)
 		}
 
-		// Priority: itag 140 (m4a audio), itag 18 (mp4 progressive AAC stereo), itag 251 (webm opus)
 		var best *fastStreamFormat
 		for _, f := range allFormats {
 			u := safeString(f["url"])
@@ -212,13 +312,23 @@ func extractFastInnertubeStream(ctx context.Context, videoID string, video bool)
 			itag := int(itagFloat)
 			mimeType := safeString(f["mimeType"])
 			clen, _ := strconv.ParseInt(safeString(f["contentLength"]), 10, 64)
+			if clen == 0 {
+				clen = parseClenFromURL(u)
+			}
 
 			if !video {
-				if itag == 140 {
+				if spec.preferProgressive && itag == 18 {
+					return &fastStreamFormat{URL: u, UserAgent: spec.userAgent, Ext: ".mp4", ContentLength: clen}, nil
+				}
+				if !spec.preferProgressive && itag == 140 {
 					return &fastStreamFormat{URL: u, UserAgent: spec.userAgent, Ext: ".m4a", ContentLength: clen}, nil
 				}
-				if itag == 18 {
-					best = &fastStreamFormat{URL: u, UserAgent: spec.userAgent, Ext: ".mp4", ContentLength: clen}
+				if itag == 18 || itag == 140 {
+					ext := ".m4a"
+					if itag == 18 {
+						ext = ".mp4"
+					}
+					best = &fastStreamFormat{URL: u, UserAgent: spec.userAgent, Ext: ext, ContentLength: clen}
 				} else if best == nil && (itag == 251 || itag == 250 || itag == 139 || strings.HasPrefix(mimeType, "audio/")) {
 					ext := ".m4a"
 					if strings.Contains(mimeType, "webm") {
@@ -261,7 +371,6 @@ func downloadFastInnertube(videoID string, video bool) (string, error) {
 	tempPath := fmt.Sprintf("%s.%d.part", targetPath, time.Now().UnixNano())
 	defer func() { _ = os.Remove(tempPath) }()
 
-	// If ContentLength is known and >= 512KB, download in parallel HTTP Range chunks for maximum gigabit speed
 	if stream.ContentLength >= 512*1024 && stream.ContentLength <= 150*1024*1024 {
 		if err := downloadParallelRanges(ctx, stream.URL, stream.UserAgent, tempPath, stream.ContentLength); err == nil {
 			if err := os.Rename(tempPath, targetPath); err == nil {
@@ -270,7 +379,6 @@ func downloadFastInnertube(videoID string, video bool) (string, error) {
 		}
 	}
 
-	// Single-stream fallback with large 256KB buffer
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, stream.URL, nil)
 	if err != nil {
 		return "", err
@@ -322,7 +430,7 @@ func downloadParallelRanges(ctx context.Context, rawURL, userAgent, destPath str
 
 	const chunkSize int64 = 1024 * 1024 // 1 MB chunks
 	numChunks := int((totalSize + chunkSize - 1) / chunkSize)
-	workers := 8
+	workers := 10
 	if numChunks < workers {
 		workers = numChunks
 	}
@@ -416,14 +524,18 @@ func (y *youTubeData) getInfo() (*utils.PlatformTracks, error) {
 	playlistID := extractPlaylistID(y.Query)
 
 	switch {
-	case playlistID != "":
+	case playlistID != "" && videoID == "":
 		if strings.HasPrefix(playlistID, "RD") && !strings.HasPrefix(playlistID, "RDCLAK") {
 			return GetYouTubeMixPlaylist(ctx, playlistID)
 		}
 		return getYouTubePlaylist(ctx, playlistID)
 
 	case videoID != "":
-		// Fast direct player lookup first instead of multiple search roundtrips
+		if cached, ok := GetCachedTrackMeta(videoID); ok {
+			go PrefetchYouTubeAudio(videoID)
+			return &utils.PlatformTracks{Results: []utils.GetUrlTrack{cached}}, nil
+		}
+
 		if res, err := getYouTubeVideo(ctx, videoID); err == nil && res != nil && len(res.Results) > 0 {
 			go PrefetchYouTubeAudio(videoID)
 			return res, nil
@@ -456,6 +568,12 @@ func (y *youTubeData) getInfo() (*utils.PlatformTracks, error) {
 
 		slog.Warn("Video ID was extracted but no matching track was found in search results", "video_id", videoID)
 		return getYouTubeVideo(ctx, videoID)
+
+	case playlistID != "":
+		if strings.HasPrefix(playlistID, "RD") && !strings.HasPrefix(playlistID, "RDCLAK") {
+			return GetYouTubeMixPlaylist(ctx, playlistID)
+		}
+		return getYouTubePlaylist(ctx, playlistID)
 	}
 
 	return nil, errors.New("no video or playlist results were found")
@@ -483,7 +601,6 @@ func (y *youTubeData) getTrack() (*utils.TrackInfo, error) {
 		return nil, errors.New("the provided URL is invalid or the platform is not supported")
 	}
 
-	// Fast path: if URL already contains a valid 11-char videoID, return it immediately without extra search calls!
 	if videoID := extractVideoID(normalizeYouTubeURL(y.Query)); len(videoID) == 11 {
 		return &utils.TrackInfo{
 			Id:       videoID,
@@ -525,65 +642,89 @@ func (y *youTubeData) downloadTrack(info *utils.TrackInfo, video bool) (string, 
 		return info.CdnURL, nil
 	}
 
-	// 1. Ultra-fast direct Innertube parallel range download to RAM disk (/dev/shm)
-	if fastPath, err := downloadFastInnertube(info.Id, video); err == nil && fastPath != "" {
-		return fastPath, nil
+	mode := "audio"
+	if video {
+		mode = "video"
 	}
+	key := fmt.Sprintf("yt:%s:%s", info.Id, mode)
 
-	// 2. Optional external API fallback if configured
-	if !video && y.ApiUrl != "" && y.APIKey != "" {
-		if filePath, err := y.downloadWithApi(info.Id, video); err == nil {
-			return filePath, nil
+	return deduplicateYouTubeDownload(key, func() (string, error) {
+		if cached := findCachedYouTubeFile(info.Id); cached != "" {
+			return cached, nil
 		}
-	}
 
-	// 3. yt-dlp fallback
-	return y.downloadWithYtDlp(info.Id, video)
+		// 1. Ultra-fast direct Innertube parallel range download to RAM disk (/dev/shm)
+		if fastPath, err := downloadFastInnertube(info.Id, video); err == nil && fastPath != "" {
+			return fastPath, nil
+		}
+
+		// 2. Optional external API fallback if configured
+		if !video && y.ApiUrl != "" && y.APIKey != "" {
+			if filePath, err := y.downloadWithApi(info.Id, video); err == nil && filePath != "" {
+				return filePath, nil
+			}
+		}
+
+		// 3. 2026 Cookie-Free yt-dlp fallback
+		return y.downloadWithYtDlp(info.Id, video)
+	})
 }
 
 func (y *youTubeData) buildYtdlpParams(videoID string, video bool) ([]string, string) {
 	outputTemplate := filepath.Join(config.DownloadsDir, "%(id)s.%(ext)s")
-	var cookieFile string
+	cacheDir := "/dev/shm/ytdlp_cache"
+	if _, err := os.Stat("/dev/shm"); err != nil {
+		cacheDir = filepath.Join(os.TempDir(), "ytdlp_cache")
+	}
+	_ = os.MkdirAll(cacheDir, 0755)
+
+	extractorArgs := "youtube:player_client=web_embedded,tv_downgraded,tv_samsung,visionos,android;player_skip=webpage,initial_data;skip=dash,translated_subs;fetch_pot=never"
+	if vData := getVisitorData(); vData != "" {
+		extractorArgs += ";visitor_data=" + vData
+	}
 
 	params := []string{
 		"yt-dlp",
 		"--no-warnings",
 		"--quiet",
+		"--no-progress",
 		"--force-ipv4",
-		"--geo-bypass",
+		"--no-check-certificates",
+		"--no-playlist",
 		"--retries", "2",
+		"--fragment-retries", "2",
 		"--continue",
 		"--no-part",
-		"--concurrent-fragments", "32",
+		"--concurrent-fragments", "16",
 		"--http-chunk-size", "10M",
 		"--socket-timeout", "8",
+		"--cache-dir", cacheDir,
+		"--js-runtimes", "deno,node",
+		"--remote-components", "ejs:github",
 		"--no-write-thumbnail",
 		"--no-write-info-json",
 		"--no-embed-metadata",
 		"--no-embed-chapters",
 		"--no-embed-subs",
-		"--extractor-args", "youtube:player_client=visionos,android,web_embedded,tv;player_skip=webpage,initial_data;fetch_pot=never",
+		"--extractor-args", extractorArgs,
 		"-o", outputTemplate,
 	}
 
 	if video {
-		formatSelector := "18/22/bestvideo[height<=720]+bestaudio/best[height<=720]"
+		formatSelector := "18/22/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best"
 		params = append(params, "-f", formatSelector, "--merge-output-format", "mp4")
 	} else {
 		params = append(params, "-f", "140/251/bestaudio[ext=m4a]/bestaudio/18/best")
 	}
 
-	cookieFile = y.getCookieFile()
-	if cookieFile != "" {
-		params = append(params, "--cookies", cookieFile)
-	} else if config.Proxy != "" {
+	if config.Proxy != "" {
 		params = append(params, "--proxy", config.Proxy)
 	}
 
 	videoURL := "https://www.youtube.com/watch?v=" + videoID
 	params = append(params, videoURL, "--print", "after_move:filepath")
 
-	return params, cookieFile
+	return params, ""
 }
 
 func (y *youTubeData) downloadWithYtDlp(videoID string, video bool) (string, error) {
@@ -593,7 +734,7 @@ func (y *youTubeData) downloadWithYtDlp(videoID string, video bool) (string, err
 
 	ytdlpParams, cookieFile := y.buildYtdlpParams(videoID, video)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, ytdlpParams[0], ytdlpParams[1:]...)
@@ -617,10 +758,16 @@ func (y *youTubeData) downloadWithYtDlp(videoID string, video bool) (string, err
 
 	downloadedPathStr := strings.TrimSpace(string(output))
 	if downloadedPathStr == "" {
+		if cached := findCachedYouTubeFile(videoID); cached != "" {
+			return cached, nil
+		}
 		return "", fmt.Errorf("no output path was returned for %s", videoID)
 	}
 
 	if _, err := os.Stat(downloadedPathStr); os.IsNotExist(err) {
+		if cached := findCachedYouTubeFile(videoID); cached != "" {
+			return cached, nil
+		}
 		return "", fmt.Errorf("the file was not found at the reported path: %s", downloadedPathStr)
 	}
 
@@ -634,7 +781,6 @@ func (y *youTubeData) getCookieFile() string {
 	}
 	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(cookiesPath))))
 	if err != nil {
-		slog.Info("Could not generate a random number", "error", err)
 		return cookiesPath[0]
 	}
 

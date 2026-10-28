@@ -1,5 +1,5 @@
-import { state, validPasscode, platform, telegram, on, haptic, connect, joinWithPassword, applyChromeTelegramSession, safeURL, formatTime } from './core.js?v=88';
-import { setTrackArtwork } from './artwork.js?v=88';
+import { state, validPasscode, platform, telegram, on, haptic, connect, joinWithPassword, applyChromeTelegramSession, safeURL, formatTime } from './core.js?v=2026';
+import { setTrackArtwork } from './artwork.js?v=2026';
 
 export function createSessionScreen({ startListening }) {
     const screen = document.getElementById('session-notice');
@@ -124,7 +124,7 @@ export function createSessionScreen({ startListening }) {
             : 'تصفح قائمة التشغيل أو استأنف الأغنية.';
         const needsWriteAccess = !state.permissions.allowsWriteToPM;
         primaryLabel.textContent = needsWriteAccess ? playing ? 'متابعة الاستماع' : 'تصفح الموسيقى' : !track ? 'استكشف الموسيقى' : playing ? 'استمع الآن' : 'فتح المشغل';
-        primaryIcon.setAttribute('href', `/static/assets/icons.svg?v=88#${!track ? 'search' : playing ? 'volume' : 'music'}`);
+        primaryIcon.setAttribute('href', `/static/assets/icons.svg?v=2026#${!track ? 'search' : playing ? 'volume' : 'music'}`);
         audioNote.textContent = playing ? 'الصوت متزامن ويعمل في الخلفية.' : !track ? 'ابحث عن أي أغنية أو رابط يوتيوب.' : 'سيبدأ الصوت فور تشغيل الأغنية.';
         audioNote.hidden = false;
         if (track) {
@@ -182,7 +182,7 @@ export function createSessionScreen({ startListening }) {
         primary.hidden = Boolean(view.loading) || passwordRequired || chromeLogin;
         primary.disabled = false;
         primaryLabel.textContent = view.action || view.retry || (platform.isTelegramWebApp ? 'العودة إلى تيليجرام' : 'العودة للرئيسية');
-        primaryIcon.setAttribute('href', `/static/assets/icons.svg?v=88#${view.retry ? 'restart' : view.action ? 'volume' : 'logout'}`);
+        primaryIcon.setAttribute('href', `/static/assets/icons.svg?v=2026#${view.retry ? 'restart' : view.action ? 'volume' : 'logout'}`);
         secondary.hidden = (!view.retry && !view.action && !passwordRequired) || chromeLogin;
         secondary.textContent = platform.isTelegramWebApp ? 'العودة إلى تيليجرام' : 'العودة للرئيسية';
         hint.hidden = true;
@@ -318,11 +318,19 @@ export function createSessionScreen({ startListening }) {
         admitted = true;
         state.joinedListening = true;
         reveal();
+        startListening();
+    });
+    on('room', () => {
+        if (!admitted && state.room && !state.sessionFailure && !state.stopped) {
+            admitted = true;
+            state.joinedListening = true;
+            reveal();
+            startListening();
+        }
     });
     on('listening', () => {
         if (!admitted || state.stopped || state.sessionFailure) return;
         if (state.joinedListening && currentCode === 'listening_required') reveal();
-        else if (!state.joinedListening && state.audioBlocked) show('listening_required');
     });
     on('authentication-failed', error => show(error.code === 'invalid_start_param' ? 'signed_room_mismatch' : error.code, error.message));
     on('session-ended', message => show('session_moved', message));

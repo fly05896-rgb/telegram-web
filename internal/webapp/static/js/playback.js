@@ -1,5 +1,5 @@
 // A single audio element follows the room clock. Local preferences never change room playback.
-import { state, on, emit, notify, preferences, playbackPosition, canControl, send, safeURL } from './core.js?v=88';
+import { state, on, emit, notify, preferences, playbackPosition, canControl, send, safeURL } from './core.js?v=2026';
 export function createPlayback(audio) {
     let source = '';
     let mediaAvailable = false;
@@ -83,22 +83,39 @@ export function createPlayback(audio) {
     const savedVolume = Number(preferences.get('volume', 1));
     audio.volume = Number.isFinite(savedVolume) ? Math.min(1, Math.max(0, savedVolume)) : 1;
     audio.muted = preferences.get('music-muted', false);
+    audio.preload = 'auto';
     function status(value) { if (state.audioStatus !== value) { state.audioStatus = value; emit('player-status'); } }
     function destroySource() { hls?.destroy(); hls = null; clearTimeout(retryTimer); }
-    function readyToPlay() { return state.connection === 'connected' && state.permissions.userId && state.joinedListening && state.room?.playback.status === 'playing' && state.room?.track?.ready !== false && source && mediaAvailable && !disposed; }
+    function readyToPlay() {
+        return state.connection === 'connected' &&
+            Boolean(state.permissions.userId || state.user?.id) &&
+            state.joinedListening &&
+            state.room?.playback?.status === 'playing' &&
+            state.room?.track?.ready !== false &&
+            Boolean(source) &&
+            mediaAvailable &&
+            !disposed;
+    }
     async function play() {
         if (!readyToPlay() || playPending || !audio.paused) return;
         const currentGeneration = generation;
         playPending = true;
         try {
             await audio.play();
+            state.audioBlocked = false;
+            status('');
             updateMediaSession();
             if (currentGeneration === generation && !readyToPlay()) audio.pause();
         } catch (error) {
             if (currentGeneration !== generation) return;
             if (error.name === 'NotAllowedError') {
-                state.joinedListening = false; state.audioBlocked = true; status('Tap Listen now to hear music.'); emit('listening');
-            } else if (error.name !== 'AbortError') status('This track couldn’t start. Tap Retry.');
+                state.joinedListening = false;
+                state.audioBlocked = true;
+                status('اضغط في أي مكان لتشغيل الصوت');
+                emit('listening');
+            } else if (error.name !== 'AbortError') {
+                status('This track couldn’t start. Tap Retry.');
+            }
         } finally { if (currentGeneration === generation) playPending = false; }
     }
     function seekToRoom() {
@@ -110,7 +127,8 @@ export function createPlayback(audio) {
     }
     function load(url) {
         destroySource(); generation++; source = url; mediaAvailable = false; playPending = false; retries = 0;
-        audio.pause(); audio.removeAttribute('src'); audio.load(); status(state.joinedListening ? 'Loading music…' : 'Tap Listen now to hear music.');
+        audio.pause(); audio.removeAttribute('src'); audio.load();
+        status(state.joinedListening ? 'Loading music…' : 'اضغط في أي مكان لتشغيل الصوت');
         if (!url) { audio.removeAttribute('src'); audio.load(); status(''); return; }
         const parsed = new URL(url, location.origin);
         const isHls = /\.m3u8$/i.test(parsed.pathname) || /(?:format|type)=hls/i.test(parsed.search);
@@ -129,7 +147,12 @@ export function createPlayback(audio) {
                     else status('This track is unavailable. Tap Retry.');
                 } else status('This track is unavailable. Tap Retry.');
             });
-        } else { mediaAvailable = true; audio.src = url; audio.load(); }
+        } else {
+            mediaAvailable = true;
+            audio.src = url;
+            audio.load();
+            if (readyToPlay()) play();
+        }
     }
     function synchronize() {
         if (disposed) return;
@@ -139,20 +162,38 @@ export function createPlayback(audio) {
         updateMediaSession();
         if (track?.ready === false) { status('Preparing the track…'); return; }
         if (!track) { status(''); return; }
-        if (!state.joinedListening) { audio.pause(); status('Tap Listen now to hear music.'); return; }
+        if (!state.joinedListening) { audio.pause(); status('اضغط في أي مكان لتشغيل الصوت'); return; }
         seekToRoom();
-        if (readyToPlay()) play(); else { audio.pause(); if (state.room.playback.status !== 'playing') status('Paused'); }
+        if (readyToPlay()) play();
+        else { audio.pause(); if (state.room?.playback?.status !== 'playing') status('Paused'); }
         emit('progress', playbackPosition());
     }
     async function join() {
-        if (disposed || state.stopped || state.connection !== 'connected' || !state.permissions.userId) return;
+        if (disposed || state.stopped || state.connection !== 'connected') return;
         state.joinedListening = true; state.audioBlocked = false;
         if (state.room?.track) { synchronize(); await play(); }
         emit('listening');
     }
+
+    // Automatically unlock and start audio on the first user interaction anywhere in the WebApp
+    const unlockOnGesture = () => {
+        if (disposed || state.stopped || state.connection !== 'connected') return;
+        if ((!state.joinedListening || state.audioBlocked || audio.paused) && state.room?.playback?.status === 'playing' && state.room?.track?.ready !== false) {
+            state.joinedListening = true;
+            state.audioBlocked = false;
+            synchronize();
+            play();
+            emit('listening');
+        }
+    };
+    document.addEventListener('pointerdown', unlockOnGesture, { passive: true });
+    document.addEventListener('touchstart', unlockOnGesture, { passive: true });
+    document.addEventListener('click', unlockOnGesture, { passive: true });
+    document.addEventListener('keydown', unlockOnGesture, { passive: true });
+
     function tick() {
         if (disposed) return;
-        if (Date.now() - lastSync > 3000) { lastSync = Date.now(); if (readyToPlay()) { seekToRoom(); play(); } }
+        if (Date.now() - lastSync > 2000) { lastSync = Date.now(); if (readyToPlay()) { seekToRoom(); play(); } }
         emit('progress', playbackPosition());
         if (state.sleepUntil && Date.now() >= state.sleepUntil) {
             state.sleepUntil = 0; state.joinedListening = false; audio.pause(); emit('sleep-expired'); emit('listening');
@@ -169,6 +210,7 @@ export function createPlayback(audio) {
         emit('progress', pos);
     }, 50);
     audio.addEventListener('loadedmetadata', synchronize);
+    audio.addEventListener('loadeddata', () => { clearBuffering(); seekToRoom(); play(); });
     audio.addEventListener('canplay', () => { clearBuffering(); seekToRoom(); play(); });
     audio.addEventListener('seeked', () => { observedTime = audio.currentTime; clearBuffering(); play(); });
     audio.addEventListener('timeupdate', () => { if (!audio.paused && Math.abs(audio.currentTime - observedTime) > .05) clearBuffering(); observedTime = audio.currentTime; });
@@ -191,7 +233,11 @@ export function createPlayback(audio) {
         }
     });
     audio.addEventListener('volumechange', () => { preferences.set('volume', audio.volume); preferences.set('music-muted', audio.muted); emit('volume'); });
-    on('room', synchronize); on('clock', seekToRoom); on('listening', synchronize);
+    on('room', synchronize);
+    on('session-ready', synchronize);
+    on('permissions', synchronize);
+    on('clock', seekToRoom);
+    on('listening', synchronize);
     on('transport-lost', () => { status('Reconnecting your player…'); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) synchronize(); });
     on('dispose', () => { disposed = true; clearInterval(clock); clearInterval(fastLyricsClock); destroySource(); audio.pause(); });
@@ -199,9 +245,17 @@ export function createPlayback(audio) {
     return {
         join,
         retry() { if (source) { const url = source; source = ''; load(url); synchronize(); } },
-        toggle() { if (!canControl() || !state.room?.track) return; if (!state.joinedListening) join(); send(state.room.playback.status === 'playing' ? 'pause' : 'resume'); },
+        toggle() {
+            if (!state.room?.track) return;
+            if (!state.joinedListening || state.audioBlocked || (state.room?.playback?.status === 'playing' && audio.paused)) {
+                join();
+                return;
+            }
+            if (!canControl()) return;
+            send(state.room.playback.status === 'playing' ? 'pause' : 'resume');
+        },
         seek(seconds) { if (canControl() && Number.isFinite(seconds) && seconds >= 0 && (!state.room?.track?.duration || seconds <= state.room.track.duration)) send('seek', { positionSeconds: seconds }); },
-        volume(value) { if (!Number.isFinite(value)) return; value = Math.max(0, Math.min(1, value)); audio.volume = value; audio.muted = value === 0; },
+        volume(value) { if (!Number.isFinite(value)) return; value = Math.max(0, Math.min(0, value) === value ? 0 : Math.min(1, value)); audio.volume = value; audio.muted = value === 0; },
         mute() { audio.muted = !audio.muted; if (!audio.muted && audio.volume === 0) audio.volume = .7; },
         getVolume() { return { volume: audio.volume, muted: audio.muted }; }
     };

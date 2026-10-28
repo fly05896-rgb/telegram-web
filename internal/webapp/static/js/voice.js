@@ -1,4 +1,4 @@
-import { state, on, emit, notify, haptic, send, platform, preferences, peerConnectionConstructor, openInBrowser } from './core.js?v=88';
+import { state, on, emit, notify, haptic, send, platform, preferences, peerConnectionConstructor, openInBrowser } from './core.js?v=2026';
 export function createVoice(container) {
     let pc = null;
     let stream = null;
@@ -15,6 +15,16 @@ export function createVoice(container) {
     let wantsToJoin = false;
     let wasSpeaking = false;
     let microphonePending = false;
+    const iceServers = [
+        {
+            urls: [
+                'stun:stun.l.google.com:19302',
+                'stun:stun1.l.google.com:19302',
+                'stun:stun2.l.google.com:19302',
+                'stun:stun.cloudflare.com:3478'
+            ]
+        }
+    ];
     function status(value) { state.voice.status = value; emit('voice-local'); }
     function self() { return state.voice.room.participants.find(p => p.userId === state.permissions.userId); }
     function allowedToSpeak() { return self()?.allowedToSpeak ?? (state.permissions.isAdmin || !state.voice.room.muteNewParticipants); }
@@ -49,7 +59,6 @@ export function createVoice(container) {
         if (stream) return stream;
         if (!platform.supportsMicrophone) throw new Error('Microphone access is unavailable. You can listen to voice chat.');
         const currentGeneration = generation;
-        // Request permission directly from the click with the same basic capture
         let result;
         try { result = await navigator.mediaDevices.getUserMedia({ audio: true, video: false }); }
         catch (error) {
@@ -90,8 +99,6 @@ export function createVoice(container) {
         }
         wantsToJoin = true; cleanup(); const currentGeneration = generation; status('joining');
         try {
-            // Capture begins in the Join gesture, before peer construction or
-            // signaling can fail. Permission refusal still permits listening.
             let local = null;
             if (!listenOnly && allowedToSpeak()) {
                 try { local = await microphone(); }
@@ -99,9 +106,8 @@ export function createVoice(container) {
             }
             if (currentGeneration !== generation) return;
             const PeerConnection = peerConnectionConstructor();
-            pc = new PeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            pc = new PeerConnection({ iceServers });
             const peer = pc;
-            // A stable sendrecv transceiver allows listen-only users to enable their mic later with replaceTrack.
             microphoneSender = peer.addTransceiver('audio', { direction: 'sendrecv' }).sender;
             peer.onicecandidate = event => {
                 if (!event.candidate || peer !== pc) return;
@@ -124,7 +130,8 @@ export function createVoice(container) {
                 else if (peer.connectionState === 'failed') { cleanup(); status('error'); notify('Voice connection failed. Try joining again.', 'error'); }
                 else if (peer.connectionState === 'disconnected') {
                     status('reconnecting');
-                    disconnectTimer = setTimeout(() => { if (peer === pc) { leave(); status('error'); notify('Voice connection was lost. Join again to reconnect.', 'error'); } }, 10000);
+                    try { peer.restartIce?.(); } catch {}
+                    disconnectTimer = setTimeout(() => { if (peer === pc) { leave(); status('error'); notify('Voice connection was lost. Join again to reconnect.', 'error'); } }, 12000);
                 }
             };
             if (local) await microphoneSender.replaceTrack(local.getAudioTracks()[0]);

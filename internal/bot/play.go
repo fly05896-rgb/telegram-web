@@ -20,9 +20,20 @@ import (
 	"html"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	td "github.com/AshokShau/gotdbot"
 )
+
+var searchLockedState atomic.Bool
+
+func isSearchLocked() bool {
+	return searchLockedState.Load()
+}
+
+func setSearchLocked(locked bool) {
+	searchLockedState.Store(locked)
+}
 
 func playHandler(c *td.Client, m *td.Message) error {
 	if !playMode(c, m) {
@@ -41,6 +52,11 @@ func fPlayHandler(c *td.Client, m *td.Message) error {
 }
 
 func handlePlay(c *td.Client, m *td.Message, force bool) error {
+	if isSearchLocked() && !isDev(c, m) {
+		_, _ = m.ReplyText(c, "- البحـث مغلـق .", nil)
+		return td.EndGroups
+	}
+
 	chatID := m.ChatId
 
 	if queueLen := cache.ChatCache.GetQueueLength(chatID); queueLen > 10 {
@@ -65,6 +81,7 @@ func handlePlay(c *td.Client, m *td.Message, force bool) error {
 	}
 
 	input := coalesce(url, args)
+	input = strings.TrimSpace(strings.ReplaceAll(input, "-v", ""))
 
 	if strings.HasPrefix(input, "tgpl_") {
 		playlist, err := db.Instance.GetPlaylist(input)
@@ -114,7 +131,7 @@ func handlePlay(c *td.Client, m *td.Message, force bool) error {
 				}
 			}
 		}
-		_, _ = m.ReplyText(c, "<b>Usage:</b>\n/play [song or URL]\n\n<b>Supported Platforms:</b>\n- YouTube\n- Spotify\n- JioSaavn\n- Apple Music", &td.SendMessageOpts{ReplyMarkup: utils.SupportKeyboard(), ParseMode: "HTML"})
+		_, _ = m.ReplyText(c, "<b>Usage:</b>\n/play [song or URL] | شغل [اسم الأغنية]\n\n<b>Supported Platforms:</b>\n- YouTube\n- Spotify\n- Apple Music\n- SoundCloud\n- Resso", &td.SendMessageOpts{ReplyMarkup: utils.SupportKeyboard(), ParseMode: "HTML"})
 		return td.EndGroups
 	}
 
@@ -131,7 +148,7 @@ func handlePlay(c *td.Client, m *td.Message, force bool) error {
 	wrapper := downloader.NewDlWrapper(input)
 	if url != "" {
 		if !wrapper.IsValid() {
-			_, _ = updater.EditText(c, "Invalid URL or unsupported platform.\n\n<b>Supported Platforms:</b>\n- YouTube\n- Spotify\n- JioSaavn\n- Apple Music", &td.EditMessageTextOpts{ReplyMarkup: utils.SupportKeyboard(), ParseMode: "HTML"})
+			_, _ = updater.EditText(c, "Invalid URL or unsupported platform.\n\n<b>Supported Platforms:</b>\n- YouTube\n- Spotify\n- Apple Music\n- SoundCloud\n- Resso", &td.EditMessageTextOpts{ReplyMarkup: utils.SupportKeyboard(), ParseMode: "HTML"})
 			return td.EndGroups
 		}
 

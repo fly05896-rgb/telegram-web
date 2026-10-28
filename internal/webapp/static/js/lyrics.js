@@ -1,5 +1,5 @@
 // Lyrics follow the authoritative room/audio position at 50ms precision.
-import { state, on, playbackPosition, lyricsAPI, canControl, send } from './core.js?v=88';
+import { state, on, playbackPosition, lyricsAPI, canControl, send } from './core.js?v=2026';
 
 export function normalizeLyrics(data) {
     if (!data || data.unsupported) return { status: 'unsupported', lines: [] };

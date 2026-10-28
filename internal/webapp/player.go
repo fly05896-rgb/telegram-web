@@ -77,8 +77,64 @@ type WebAppPlayerManager struct {
 	rooms map[int64]*RoomState
 }
 
-var Manager = &WebAppPlayerManager{
-	rooms: make(map[int64]*RoomState),
+var Manager = newPlayerManager()
+
+func newPlayerManager() *WebAppPlayerManager {
+	m := &WebAppPlayerManager{
+		rooms: make(map[int64]*RoomState),
+	}
+	go m.startPlaybackWatchdog()
+	return m
+}
+
+// startPlaybackWatchdog (ported from seeker.py & call.py):
+// Ensures tracks never hang past their duration and cleans up ghost queues automatically.
+func (m *WebAppPlayerManager) startPlaybackWatchdog() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		m.mu.RLock()
+		rooms := make([]*RoomState, 0, len(m.rooms))
+		for _, r := range m.rooms {
+			rooms = append(rooms, r)
+		}
+		m.mu.RUnlock()
+
+		nowMs := time.Now().UnixMilli()
+		for _, room := range rooms {
+			room.mu.Lock()
+			chatID := room.RoomID
+			status := room.Status
+			trackID := room.currentTrackID
+			pos := room.Position
+			sTime := room.ServerTime
+			transitioning := room.isTransitioning
+			bot := room.BotClient
+			room.mu.Unlock()
+
+			if transitioning || status == "stopped" {
+				continue
+			}
+
+			track := cache.ChatCache.GetPlayingTrack(chatID)
+			if track == nil {
+				if status != "stopped" {
+					m.Stop(bot, chatID)
+				}
+				continue
+			}
+
+			if status == "playing" && track.Duration > 0 {
+				elapsed := pos + float64(nowMs-sTime)/1000.0
+				if elapsed >= float64(track.Duration)+3.0 {
+					go func(b *td.Client, cid int64, tid string) {
+						_ = PlayNextForTrack(b, cid, tid)
+					}(bot, chatID, trackID)
+				}
+			}
+		}
+	}
 }
 
 func (m *WebAppPlayerManager) getOrCreate(bot *td.Client, chatID int64) *RoomState {

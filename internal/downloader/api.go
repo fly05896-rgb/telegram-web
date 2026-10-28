@@ -20,8 +20,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,17 +37,20 @@ type apiData struct {
 }
 
 var (
-	ogTitleRe   = regexp.MustCompile(`(?i)<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']`)
-	ogDescRe    = regexp.MustCompile(`(?i)<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']`)
-	htmlTitleRe = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	ogTitleRe       = regexp.MustCompile(`(?i)<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']`)
+	ogDescRe        = regexp.MustCompile(`(?i)<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']`)
+	htmlTitleRe     = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	appleSongMetaRe = regexp.MustCompile(`(?i)<meta[^>]+property=["']music:song["'][^>]+content=["']([^"']+)["']`)
+	spotifyTrackRe  = regexp.MustCompile(`"name"\s*:\s*"([^"]{2,100})"\s*,\s*"uri"\s*:\s*"spotify:track:[A-Za-z0-9]+"`)
 )
 
 var apiPatterns = map[string]*regexp.Regexp{
 	utils.Apple:      regexp.MustCompile(`(?i)^https?:\/\/music\.apple\.com\/[a-zA-Z-]+\/(?:song\/(?:[^\/]+\/)?\d+|album\/[^\/]+\/\d+(?:\?i=\d+)?|playlist\/[^\/]+\/pl\.[\w.-]+|artist\/[^\/]+\/\d+)(?:\?.*)?$`),
-	utils.Spotify:    regexp.MustCompile(`(?i)^(https?://)?([a-z0-9-]+\.)*spotify\.com/(track|playlist|album|artist)/[a-zA-Z0-9]+(\?.*)?$`),
+	utils.Spotify:    regexp.MustCompile(`(?i)^(https?://)?([a-z0-9-]+\.)*(?:spotify\.com/(?:intl-[a-z-]+/)?(track|playlist|album|artist)/[a-zA-Z0-9]+|spotify\.link/[a-zA-Z0-9]+)(\?.*)?$`),
 	utils.JioSaavn:   regexp.MustCompile(`(?i)https?:\/\/(?:www\.)?(?:jiosaavn|saavn)\.com\/(?:s\/)?(song|album|playlist|featured)(?:\/[^\/]+)*\/([A-Za-z0-9_,-]+)(?:\/)?(?:\?.*)?$`),
-	utils.Deezer:     regexp.MustCompile(`(?i)https?:\/\/(?:www\.)?deezer\.com\/(?:[a-z]{2}\/)?(track|album|playlist)\/(\d+)`),
+	utils.Deezer:     regexp.MustCompile(`(?i)https?:\/\/(?:www\.|deezer\.page\.link\/)?(?:deezer\.com\/(?:[a-z]{2}\/)?(track|album|playlist)\/(\d+)|[A-Za-z0-9]+)`),
 	utils.SoundCloud: regexp.MustCompile(`(?i)^(https?://)?(www\.|m\.|on\.)?soundcloud\.com/[a-zA-Z0-9_-]+(/[a-zA-Z0-9._-]+)?(\?.*)?$`),
+	"resso":          regexp.MustCompile(`(?i)^https?:\/\/(?:m\.|www\.)?resso\.com\/.+$`),
 	utils.Gaana:      regexp.MustCompile(`(?i)https?:\/\/(?:www\.)?gaana\.com\/(song|album|playlist|artist)\/([A-Za-z0-9\-]+)`),
 	utils.Tidal:      regexp.MustCompile(`(?i)https?:\/\/(?:www\.|listen\.)?tidal\.com\/(?:browse\/)?(track|album|playlist)\/([a-zA-Z0-9-]+)(?:[\/?].*)?`),
 	utils.MXPlayer:   regexp.MustCompile(`(?i)https?:\/\/(?:www\.)?mxplayer\.in\/(?:show|movie)\/.*`),
@@ -80,12 +87,41 @@ func (a *apiData) isValid() bool {
 	return false
 }
 
-func resolveExternalMusicTitle(rawURL string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+// resolveExternalMusicQueries extracts one or multiple song search queries (for tracks, playlists, or albums) from Spotify, Apple Music, Resso, SoundCloud, or Deezer.
+func resolveExternalMusicQueries(rawURL string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 
-	// 1. Spotify fast public oEmbed
-	if strings.Contains(strings.ToLower(rawURL), "spotify.com") {
+	lowerURL := strings.ToLower(rawURL)
+
+	// 1. Spotify fast public oEmbed + Embed Playlist/Album parser (Ported from Spotify.py)
+	if strings.Contains(lowerURL, "spotify.com") || strings.Contains(lowerURL, "spotify.link") {
+		if strings.Contains(lowerURL, "/playlist/") || strings.Contains(lowerURL, "/album/") || strings.Contains(lowerURL, "/artist/") {
+			embedURL := strings.Replace(rawURL, "open.spotify.com/", "open.spotify.com/embed/", 1)
+			if req, err := http.NewRequestWithContext(ctx, http.MethodGet, embedURL, nil); err == nil {
+				req.Header.Set("User-Agent", defaultUserAgent)
+				if resp, doErr := client.Do(req); doErr == nil {
+					bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+					_ = resp.Body.Close()
+					matches := spotifyTrackRe.FindAllStringSubmatch(string(bodyBytes), 15)
+					var queries []string
+					seen := make(map[string]bool)
+					for _, m := range matches {
+						if len(m) > 1 {
+							q := strings.TrimSpace(html.UnescapeString(m[1]))
+							if q != "" && !seen[q] {
+								seen[q] = true
+								queries = append(queries, q)
+							}
+						}
+					}
+					if len(queries) > 0 {
+						return queries, nil
+					}
+				}
+			}
+		}
+
 		oembedURL := "https://open.spotify.com/oembed?url=" + url.QueryEscape(rawURL)
 		if req, err := http.NewRequestWithContext(ctx, http.MethodGet, oembedURL, nil); err == nil {
 			req.Header.Set("User-Agent", defaultUserAgent)
@@ -96,25 +132,77 @@ func resolveExternalMusicTitle(rawURL string) (string, error) {
 				_ = json.NewDecoder(io.LimitReader(resp.Body, 512*1024)).Decode(&odata)
 				_ = resp.Body.Close()
 				if strings.TrimSpace(odata.Title) != "" {
-					return strings.TrimSpace(odata.Title), nil
+					return []string{strings.TrimSpace(odata.Title)}, nil
 				}
 			}
 		}
 	}
 
-	// 2. Scrape OpenGraph title/description for Spotify, Apple Music, SoundCloud, Deezer, etc.
+	// 2. SoundCloud fast public oEmbed (Ported from Soundcloud.py)
+	if strings.Contains(lowerURL, "soundcloud.com") {
+		scOembed := "https://soundcloud.com/oembed?format=json&url=" + url.QueryEscape(rawURL)
+		if req, err := http.NewRequestWithContext(ctx, http.MethodGet, scOembed, nil); err == nil {
+			req.Header.Set("User-Agent", defaultUserAgent)
+			if resp, doErr := client.Do(req); doErr == nil {
+				var scData struct {
+					Title      string `json:"title"`
+					AuthorName string `json:"author_name"`
+				}
+				_ = json.NewDecoder(io.LimitReader(resp.Body, 512*1024)).Decode(&scData)
+				_ = resp.Body.Close()
+				title := strings.TrimSpace(scData.Title)
+				if title != "" {
+					if scData.AuthorName != "" && !strings.Contains(strings.ToLower(title), strings.ToLower(scData.AuthorName)) {
+						title = strings.TrimSpace(title + " " + scData.AuthorName)
+					}
+					return []string{title}, nil
+				}
+			}
+		}
+	}
+
+	// 3. Scrape OpenGraph & Apple Music / Resso tags (Ported from Apple.py & Resso.py)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("User-Agent", defaultUserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	_ = resp.Body.Close()
 	page := string(bodyBytes)
+
+	// Check for Apple Music Playlist (<meta property="music:song" content="..."> from Apple.py)
+	if strings.Contains(lowerURL, "music.apple.com") && strings.Contains(lowerURL, "/playlist/") {
+		songLinks := appleSongMetaRe.FindAllStringSubmatch(page, 15)
+		var queries []string
+		for _, item := range songLinks {
+			if len(item) < 2 {
+				continue
+			}
+			content := strings.TrimRight(item[1], "/")
+			var slug string
+			if strings.Contains(content, "album/") {
+				parts := strings.SplitN(content, "album/", 2)
+				slug = strings.Split(parts[1], "/")[0]
+			} else {
+				parts := strings.Split(content, "/")
+				if len(parts) >= 2 {
+					slug = parts[len(parts)-2]
+				}
+			}
+			cleanName := strings.TrimSpace(strings.ReplaceAll(slug, "-", " "))
+			if cleanName != "" {
+				queries = append(queries, cleanName)
+			}
+		}
+		if len(queries) > 0 {
+			return queries, nil
+		}
+	}
 
 	var title, desc string
 	if m := ogTitleRe.FindStringSubmatch(page); len(m) > 1 {
@@ -126,20 +214,60 @@ func resolveExternalMusicTitle(rawURL string) (string, error) {
 		desc = html.UnescapeString(strings.TrimSpace(m[1]))
 	}
 
-	for _, suffix := range []string{" on Apple Music", " | Spotify", " - song and lyrics by ", " - song by "} {
+	for _, suffix := range []string{" on Apple Music", " | Spotify", " - song and lyrics by ", " - song by ", " | SoundCloud"} {
 		title = strings.ReplaceAll(title, suffix, " ")
 	}
+	// Resso & Spotify description artist extraction (`og:description` split on `·`)
 	if desc != "" && strings.Contains(desc, "·") {
 		parts := strings.Split(desc, "·")
-		if len(parts) > 0 && !strings.Contains(strings.ToLower(title), strings.ToLower(strings.TrimSpace(parts[0]))) {
-			title = strings.TrimSpace(title + " " + strings.TrimSpace(parts[0]))
+		if len(parts) > 0 {
+			artistPart := strings.TrimSpace(parts[0])
+			artistPart = strings.TrimPrefix(artistPart, "Listen to ")
+			if artistPart != "" && len(artistPart) < 60 && !strings.Contains(strings.ToLower(title), strings.ToLower(artistPart)) {
+				title = strings.TrimSpace(title + " " + artistPart)
+			}
 		}
 	}
 	title = strings.TrimSpace(title)
 	if title == "" {
-		return "", errors.New("could not extract track title from URL")
+		return nil, errors.New("could not extract track title from URL")
 	}
-	return title, nil
+	return []string{title}, nil
+}
+
+// downloadSoundCloudDirect resolves or downloads SoundCloud links in a single step (Ported from Soundcloud.py).
+func downloadSoundCloudDirect(rawURL string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	if err := os.MkdirAll(config.DownloadsDir, 0755); err != nil {
+		return "", err
+	}
+	outTmpl := filepath.Join(config.DownloadsDir, "sc_%(id)s.%(ext)s")
+	cmd := exec.CommandContext(
+		ctx,
+		"yt-dlp",
+		"--no-warnings",
+		"--quiet",
+		"--no-playlist",
+		"--force-ipv4",
+		"--no-check-certificates",
+		"-f", "bestaudio/best",
+		"-o", outTmpl,
+		rawURL,
+		"--print", "after_move:filepath",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(out))
+	if path != "" {
+		if info, statErr := os.Stat(path); statErr == nil && info.Size() > 8192 {
+			return path, nil
+		}
+	}
+	return "", errors.New("soundcloud direct download empty")
 }
 
 func (a *apiData) getInfo() (*utils.PlatformTracks, error) {
@@ -160,16 +288,46 @@ func (a *apiData) getInfo() (*utils.PlatformTracks, error) {
 		}
 	}
 
-	// Cookie-free / Key-free fallback via YouTube Innertube
-	searchQuery, err := resolveExternalMusicTitle(a.Query)
-	if err != nil || searchQuery == "" {
+	// Cookie-free / Key-free resolution via YouTube Innertube (parallelized for playlists/albums like stream.py)
+	queries, err := resolveExternalMusicQueries(a.Query)
+	if err != nil || len(queries) == 0 {
 		return nil, fmt.Errorf("failed to resolve external music link: %w", err)
 	}
-	tracks, err := searchYouTube(searchQuery, 1)
-	if err != nil || len(tracks) == 0 {
-		return nil, errors.New("no matching track found on YouTube")
+
+	if len(queries) == 1 {
+		tracks, sErr := searchYouTube(queries[0], 1)
+		if sErr != nil || len(tracks) == 0 {
+			return nil, errors.New("no matching track found on YouTube")
+		}
+		return &utils.PlatformTracks{Results: tracks[:1]}, nil
 	}
-	return &utils.PlatformTracks{Results: tracks[:1]}, nil
+
+	results := make([]utils.GetUrlTrack, len(queries))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 6)
+	for i, q := range queries {
+		wg.Add(1)
+		go func(idx int, queryStr string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if found, sErr := searchYouTube(queryStr, 1); sErr == nil && len(found) > 0 {
+				results[idx] = found[0]
+			}
+		}(i, q)
+	}
+	wg.Wait()
+
+	var validTracks []utils.GetUrlTrack
+	for _, tr := range results {
+		if tr.Id != "" {
+			validTracks = append(validTracks, tr)
+		}
+	}
+	if len(validTracks) == 0 {
+		return nil, errors.New("no matching tracks found on YouTube")
+	}
+	return &utils.PlatformTracks{Results: validTracks}, nil
 }
 
 func (a *apiData) search() (*utils.PlatformTracks, error) {
@@ -238,6 +396,12 @@ func (a *apiData) getTrack() (*utils.TrackInfo, error) {
 }
 
 func (a *apiData) downloadTrack(info *utils.TrackInfo, video bool) (string, error) {
+	if strings.EqualFold(info.Platform, utils.SoundCloud) && strings.Contains(strings.ToLower(info.URL), "soundcloud.com") {
+		if scPath, scErr := downloadSoundCloudDirect(info.URL); scErr == nil && scPath != "" {
+			return scPath, nil
+		}
+	}
+
 	yt := newYouTubeData(info.URL)
 	if info.Platform == utils.YouTube || len(info.Id) == 11 {
 		return yt.downloadTrack(info, video)
