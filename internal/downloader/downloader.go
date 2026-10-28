@@ -1,0 +1,105 @@
+/*
+ * TgMusicBot - Telegram Music Bot
+ *  Copyright (c) 2025-2026 Ashok Shau
+ *
+ *  Licensed under GNU GPL v3
+ *  See https://github.com/AshokShau/TgMusicBot
+ */
+
+package downloader
+
+import (
+	"ashokshau/tg-web/internal/utils"
+	"fmt"
+	"strings"
+
+	td "github.com/AshokShau/gotdbot"
+)
+
+func DlCachedTrack(cached *utils.PlayerCache, bot *td.Client) (string, error) {
+	if cached.Platform == utils.DirectLink {
+		return cached.URL, nil
+	}
+
+	if cached.Platform == utils.Telegram {
+		return downloadTelegramFile(cached, bot)
+	}
+
+	dlBot := bot
+	if DlBot != nil {
+		dlBot = DlBot
+	}
+
+	return downloadViaWrapper(cached, dlBot)
+}
+
+func downloadViaWrapper(cached *utils.PlayerCache, dlBot *td.Client) (string, error) {
+	// Fast path: if we already have a YouTube video ID in cached.TrackID, skip redundant search/getInfo roundtrips.
+	if (cached.Platform == "" || strings.EqualFold(cached.Platform, utils.YouTube)) && len(cached.TrackID) == 11 {
+		yt := newYouTubeData(cached.URL)
+		track := &utils.TrackInfo{
+			Id:       cached.TrackID,
+			URL:      cached.URL,
+			Platform: utils.YouTube,
+		}
+		if path, err := yt.downloadTrack(track, cached.IsVideo); err == nil && path != "" {
+			if utils.TelegramMessageRegex.MatchString(path) {
+				return downloadFromTelegramMessage(dlBot, path)
+			}
+			return path, nil
+		}
+	}
+
+	wrapper := NewDlWrapper(cached.URL)
+	if !wrapper.IsValid() {
+		return "", fmt.Errorf("invalid cached URL: %s", cached.URL)
+	}
+
+	track, err := wrapper.GetTrack()
+	if err != nil {
+		return "", fmt.Errorf("get track info: %w", err)
+	}
+
+	path, err := wrapper.DownloadTrack(track, cached.IsVideo)
+	if err != nil {
+		return "", err
+	}
+
+	if utils.TelegramMessageRegex.MatchString(path) {
+		return downloadFromTelegramMessage(dlBot, path)
+	}
+
+	return path, nil
+}
+
+func downloadTelegramFile(cached *utils.PlayerCache, bot *td.Client) (string, error) {
+	file, err := bot.GetRemoteFile(cached.TrackID, nil)
+	if err != nil {
+		return "", err
+	}
+
+	d, err := file.Download(bot, 1, &td.DownloadFileOpts{Synchronous: true})
+	if err != nil {
+		return "", err
+	}
+
+	return d.Local.Path, nil
+}
+
+func downloadFromTelegramMessage(bot *td.Client, msgURL string) (string, error) {
+	msg, err := utils.GetMessage(bot, msgURL)
+	if err != nil {
+		return "", fmt.Errorf("get telegram message: %w", err)
+	}
+
+	file, err := msg.Download(bot, 1, &td.DownloadFileOpts{Synchronous: true})
+	if err != nil {
+		return "", err
+	}
+
+	if file == nil || file.Local == nil {
+		return "", fmt.Errorf("failed to download file from Telegram message")
+	}
+
+	return file.Local.Path, nil
+}

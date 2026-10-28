@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#161822">
+    <meta name="description" content="Search music, build a queue and save playlists in TeleMusic, the Liquid Glass music player for your Telegram chats and Chrome browser.">
+    <title>TeleMusic · Music for Telegram &amp; Chrome</title>
+    <link rel="stylesheet" href="/static/public.css?v=99">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+        (function () {
+            var tg = window.Telegram && window.Telegram.WebApp;
+            var hasTgData = (tg && tg.initData && tg.initData.length > 0) ||
+                location.hash.indexOf('tgWebAppData') !== -1 ||
+                location.search.indexOf('tgWebAppStartParam') !== -1 ||
+                location.search.indexOf('startapp=') !== -1 ||
+                location.search.indexOf('room=') !== -1 ||
+                location.search.indexOf('uid=') !== -1;
+            if (hasTgData) {
+                location.replace('/room' + location.search + location.hash);
+            }
+        })();
+    </script>
+    <script type="module" src="/static/js/appearance.js?v=99"></script>
+</head>
+<body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+        <a class="brand" href="/" aria-label="TeleMusic home"><svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13M9 9l12-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="16" rx="3" ry="3"/></svg>TeleMusic</a>
+        <nav aria-label="Main navigation"><a href="/privacy">Privacy</a><a href="https://t.me/Fmusic_TTbot?start=web" target="_blank" rel="noopener noreferrer">Telegram Bot</a></nav>
+    </header>
+    <main id="main" class="home-main">
+        <section class="hero" aria-labelledby="hero-title">
+            <h1 id="hero-title">شغّل موسيقاك المفضلة.<br><span>في تيليجرام أو متصفح كروم بدون انقطاع.</span></h1>
+            <p class="hero-description">أرسل <code>/start</code> للبوت في تيليجرام للحصول على الأيدي الخاص بك، ثم افتح المشغل هنا في متصفح كروم لتشغيل الصوت في الخلفية بسرعة البرق.</p>
+            <div class="actions"><a id="open-player-link" class="button primary" href="/room">فتح مشغل كروم بالأيدي <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a><a class="button quiet" href="https://t.me/Fmusic_TTbot?start=web" target="_blank" rel="noopener noreferrer">فتح البوت في تيليجرام (@Fmusic_TTbot)</a></div>
+            <p class="action-note">للحصول على الأيدي الخاص بك، افتح البوت في تيليجرام وأرسل <code>/start</code> ثم انسخ الأيدي وأدخله في مشغل كروم.</p>
+        </section>
+        <section class="listening-features" aria-label="Inside the player">
+            <div><h2>تشغيل في الخلفية على كروم</h2><p>استمع للموسيقى حتى بعد الخروج من تطبيق تيليجرام عبر فتح المشغل في متصفح كروم بالأيدي الخاص بك.</p></div>
+            <div><h2>تحميل وتشغيل بسرعة البرق</h2><p>استخراج مباشر وتخزين فوري على ذاكرة الرام لتشغيل الأغاني بدون انتظار.</p></div>
+            <div><h2>دعم كامل للغتين العربية والإنجليزية</h2><p>تحكم كامل في إعدادات الغرفة واللغة من داخل المشغل أو عبر أمر <code>/settings</code> في البوت.</p></div>
+        </section>
+        <section id="getting-started" class="getting-started" aria-labelledby="start-title">
+            <div><h2 id="start-title">كيف تبدأ التشغيل من كروم؟</h2><p>ثلاث خطوات بسيطة لربط حسابك بالمشغل:</p></div>
+            <ol class="steps">
+                <li><strong>أرسل /start للبوت</strong><p>افتح <a href="https://t.me/Fmusic_TTbot?start=web" target="_blank" rel="noopener noreferrer">@Fmusic_TTbot</a> في تيليجرام وأرسل <code>/start</code> ليظهر لك الأيدي الخاص بك.</p></li>
+                <li><strong>أدخل الأيدي في مشغل كروم</strong><p>اضغط على زر <strong>فتح مشغل كروم بالأيدي</strong> بالأعلى وأدخل الأيدي الرقمي الخاص بك.</p></li>
+                <li><strong>استمتع بالموسيقى ومشاركتها</strong><p>ابحث عن أي أغنية أو شارك رابط الغرفة مع أصدقائك للاستماع معاً في نفس اللحظة.</p></li>
+            </ol>
+        </section>
+        <section class="privacy-note" aria-labelledby="privacy-title"><h2 id="privacy-title">Know what you share.</h2><p>Listening rooms are shared spaces. Other listeners can see your displayed profile, track requests, and chat messages, and hear you when your microphone is on.</p><a href="/privacy">Read the privacy policy</a></section>
+    </main>
+    <footer class="site-footer"><p>TeleMusic · Music for Telegram</p><nav aria-label="Footer navigation"><a href="/privacy">Privacy policy</a><a href="{{.SupportURL}}" target="_blank" rel="noopener noreferrer">Support</a></nav></footer>
+    <script>
+        (function () {
+            var btn = document.getElementById('open-player-link');
+            if (btn && (location.search || location.hash)) {
+                btn.href = '/room' + location.search + location.hash;
+            }
+        })();
+    </script>
+</body>
+</html>

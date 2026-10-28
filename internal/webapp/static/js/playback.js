@@ -1,0 +1,201 @@
+// A single audio element follows the room clock. Local preferences never change room playback.
+import { state, on, emit, notify, preferences, playbackPosition, canControl, send, safeURL } from './core.js?v=88';
+export function createPlayback(audio) {
+    let source = '';
+    let mediaAvailable = false;
+    let hls = null;
+    let generation = 0;
+    let retryTimer = null;
+    let retries = 0;
+    let playPending = false;
+    let lastSync = 0;
+    let disposed = false;
+    let observedTime = 0;
+    let lastMediaTrackId = '';
+    const bufferingStatuses = new Set(['Buffering…', 'Loading the track…']);
+
+    // Keep audio session active in background on iOS/Android/Chrome using MediaSession API
+    function updateMediaSession() {
+        if (!('mediaSession' in navigator)) return;
+        const track = state.room?.track;
+        if (!track) {
+            navigator.mediaSession.playbackState = 'none';
+            return;
+        }
+        const pbStatus = state.room?.playback?.status === 'playing' ? 'playing' : 'paused';
+        navigator.mediaSession.playbackState = pbStatus;
+        if (lastMediaTrackId !== String(track.id || track.title)) {
+            lastMediaTrackId = String(track.id || track.title);
+            const thumb = safeURL(track.thumbnail) || `${location.origin}/static/assets/artwork.svg`;
+            try {
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: track.title || 'TeleMusic',
+                    artist: track.artist || (track.user ? `Requested by ${track.user}` : 'TeleMusic'),
+                    album: 'TeleMusic Web Player',
+                    artwork: [
+                        { src: thumb, sizes: '512x512', type: 'image/jpeg' },
+                        { src: thumb, sizes: '256x256', type: 'image/jpeg' }
+                    ]
+                });
+            } catch { /* Ignore metadata errors on older browsers */ }
+        }
+        try {
+            const dur = Number(track.duration) || 0;
+            const pos = Math.min(dur, Math.max(0, playbackPosition()));
+            if (dur > 0 && typeof navigator.mediaSession.setPositionState === 'function') {
+                navigator.mediaSession.setPositionState({
+                    duration: dur,
+                    playbackRate: 1,
+                    position: pos
+                });
+            }
+        } catch { /* Ignore position state errors */ }
+    }
+
+    if ('mediaSession' in navigator) {
+        const safeAction = (action, handler) => {
+            try { navigator.mediaSession.setActionHandler(action, handler); } catch { /* Unsupported action */ }
+        };
+        safeAction('play', () => {
+            if (canControl() && state.room?.playback?.status !== 'playing') send('resume');
+            else play();
+        });
+        safeAction('pause', () => {
+            if (canControl() && state.room?.playback?.status === 'playing') send('pause');
+            else audio.pause();
+        });
+        safeAction('nexttrack', () => {
+            if (canControl()) send('skip');
+        });
+        safeAction('previoustrack', () => {
+            if (canControl()) send('seek', { positionSeconds: 0 });
+        });
+        safeAction('seekto', details => {
+            if (canControl() && details && Number.isFinite(details.seekTime)) {
+                send('seek', { positionSeconds: Math.max(0, details.seekTime) });
+            }
+        });
+    }
+
+    function clearBuffering() {
+        if (bufferingStatuses.has(state.audioStatus) && !audio.seeking && audio.readyState >= 2) status('');
+    }
+    const savedVolume = Number(preferences.get('volume', 1));
+    audio.volume = Number.isFinite(savedVolume) ? Math.min(1, Math.max(0, savedVolume)) : 1;
+    audio.muted = preferences.get('music-muted', false);
+    function status(value) { if (state.audioStatus !== value) { state.audioStatus = value; emit('player-status'); } }
+    function destroySource() { hls?.destroy(); hls = null; clearTimeout(retryTimer); }
+    function readyToPlay() { return state.connection === 'connected' && state.permissions.userId && state.joinedListening && state.room?.playback.status === 'playing' && state.room?.track?.ready !== false && source && mediaAvailable && !disposed; }
+    async function play() {
+        if (!readyToPlay() || playPending || !audio.paused) return;
+        const currentGeneration = generation;
+        playPending = true;
+        try {
+            await audio.play();
+            updateMediaSession();
+            if (currentGeneration === generation && !readyToPlay()) audio.pause();
+        } catch (error) {
+            if (currentGeneration !== generation) return;
+            if (error.name === 'NotAllowedError') {
+                state.joinedListening = false; state.audioBlocked = true; status('Tap Listen now to hear music.'); emit('listening');
+            } else if (error.name !== 'AbortError') status('This track couldn’t start. Tap Retry.');
+        } finally { if (currentGeneration === generation) playPending = false; }
+    }
+    function seekToRoom() {
+        if (audio.readyState < 1 || audio.seeking || !source) return;
+        const target = playbackPosition();
+        if (Math.abs(audio.currentTime - target) > 1.35) {
+            try { audio.currentTime = target; } catch { /* The stream may not be seekable until metadata arrives. */ }
+        }
+    }
+    function load(url) {
+        destroySource(); generation++; source = url; mediaAvailable = false; playPending = false; retries = 0;
+        audio.pause(); audio.removeAttribute('src'); audio.load(); status(state.joinedListening ? 'Loading music…' : 'Tap Listen now to hear music.');
+        if (!url) { audio.removeAttribute('src'); audio.load(); status(''); return; }
+        const parsed = new URL(url, location.origin);
+        const isHls = /\.m3u8$/i.test(parsed.pathname) || /(?:format|type)=hls/i.test(parsed.search);
+        if (isHls && !audio.canPlayType('application/vnd.apple.mpegurl')) {
+            if (!window.Hls?.isSupported()) { status('This device can’t play this track.'); return; }
+            mediaAvailable = true;
+            hls = new window.Hls({ enableWorker: true });
+            hls.attachMedia(audio);
+            hls.on(window.Hls.Events.MEDIA_ATTACHED, () => hls?.loadSource(url));
+            hls.on(window.Hls.Events.MANIFEST_PARSED, () => { seekToRoom(); play(); });
+            hls.on(window.Hls.Events.ERROR, (_, data) => {
+                if (!data.fatal) return;
+                if (retries++ < 2) {
+                    if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) hls?.startLoad();
+                    else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
+                    else status('This track is unavailable. Tap Retry.');
+                } else status('This track is unavailable. Tap Retry.');
+            });
+        } else { mediaAvailable = true; audio.src = url; audio.load(); }
+    }
+    function synchronize() {
+        if (disposed) return;
+        const track = state.room?.track;
+        const url = track && track.ready !== false ? safeURL(track.audioUrl) : '';
+        if (url !== source) load(url);
+        updateMediaSession();
+        if (track?.ready === false) { status('Preparing the track…'); return; }
+        if (!track) { status(''); return; }
+        if (!state.joinedListening) { audio.pause(); status('Tap Listen now to hear music.'); return; }
+        seekToRoom();
+        if (readyToPlay()) play(); else { audio.pause(); if (state.room.playback.status !== 'playing') status('Paused'); }
+        emit('progress', playbackPosition());
+    }
+    async function join() {
+        if (disposed || state.stopped || state.connection !== 'connected' || !state.permissions.userId) return;
+        state.joinedListening = true; state.audioBlocked = false;
+        if (state.room?.track) { synchronize(); await play(); }
+        emit('listening');
+    }
+    function tick() {
+        if (disposed) return;
+        if (Date.now() - lastSync > 3000) { lastSync = Date.now(); if (readyToPlay()) { seekToRoom(); play(); } }
+        emit('progress', playbackPosition());
+        if (state.sleepUntil && Date.now() >= state.sleepUntil) {
+            state.sleepUntil = 0; state.joinedListening = false; audio.pause(); emit('sleep-expired'); emit('listening');
+            notify('Sleep timer finished. Music stopped on this device.');
+        }
+        emit('tick');
+    }
+    const clock = setInterval(tick, 250);
+    audio.addEventListener('loadedmetadata', synchronize);
+    audio.addEventListener('canplay', () => { clearBuffering(); seekToRoom(); play(); });
+    audio.addEventListener('seeked', () => { observedTime = audio.currentTime; clearBuffering(); play(); });
+    audio.addEventListener('timeupdate', () => { if (!audio.paused && Math.abs(audio.currentTime - observedTime) > .05) clearBuffering(); observedTime = audio.currentTime; });
+    audio.addEventListener('playing', () => { status(''); updateMediaSession(); });
+    audio.addEventListener('pause', () => updateMediaSession());
+    audio.addEventListener('waiting', () => { if (readyToPlay()) status('Buffering…'); });
+    audio.addEventListener('stalled', () => { if (readyToPlay() && audio.readyState < 3 && !audio.seeking) status('Loading the track…'); });
+    audio.addEventListener('ended', () => {
+        status('Waiting for the next track…');
+    });
+    audio.addEventListener('error', () => {
+        if (!source || !mediaAvailable || disposed) return;
+        status('This track is unavailable. Tap Retry.');
+        if (retries++ < 2) {
+            const currentGeneration = generation;
+            retryTimer = setTimeout(() => {
+                if (currentGeneration !== generation || !source || hls) return;
+                audio.load(); play();
+            }, 1200);
+        }
+    });
+    audio.addEventListener('volumechange', () => { preferences.set('volume', audio.volume); preferences.set('music-muted', audio.muted); emit('volume'); });
+    on('room', synchronize); on('clock', seekToRoom); on('listening', synchronize);
+    on('transport-lost', () => { status('Reconnecting your player…'); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) synchronize(); });
+    on('dispose', () => { disposed = true; clearInterval(clock); destroySource(); audio.pause(); });
+    window.addEventListener('pageshow', e => { if (e.persisted) synchronize(); });
+    return {
+        join,
+        retry() { if (source) { const url = source; source = ''; load(url); synchronize(); } },
+        toggle() { if (!canControl() || !state.room?.track) return; if (!state.joinedListening) join(); send(state.room.playback.status === 'playing' ? 'pause' : 'resume'); },
+        seek(seconds) { if (canControl() && Number.isFinite(seconds) && seconds >= 0 && (!state.room?.track?.duration || seconds <= state.room.track.duration)) send('seek', { positionSeconds: seconds }); },
+        volume(value) { if (!Number.isFinite(value)) return; value = Math.max(0, Math.min(1, value)); audio.volume = value; audio.muted = value === 0; },
+        mute() { audio.muted = !audio.muted; if (!audio.muted && audio.volume === 0) audio.volume = .7; },
+        getVolume() { return { volume: audio.volume, muted: audio.muted }; }
+    };
+}
