@@ -1,5 +1,10 @@
+# fly.toml app configuration file generated for telegram-web-osliyw on 2026-10-30T12:55:02Z
+#
+# See https://docs.fly.io/reference/configuration for information about how to use this file.
+#
+
 app = "telegram-web-osliyw"
-primary_region = "ams"
+primary_region = 'ams'
 
 [build]
   dockerfile = "Dockerfile"
@@ -11,17 +16,21 @@ primary_region = "ams"
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "off"
+  auto_stop_machines = false
   auto_start_machines = true
   min_machines_running = 1
-  processes = ["app"]
-
-  [http_service.concurrency]
-    type = "connections"
-    hard_limit = 1000
-    soft_limit = 800
+  processes = ['app']
+  concurrency = { hard_limit = 1000, soft_limit = 800, type = 'connections' }
 
 [[vm]]
-  memory = "1gb"
-  cpu_kind = "shared"
+  memory = '1gb'
+  cpu_kind = 'shared'
   cpus = 1
+
+[[vm]]
+  memory = '49gb'
+  cpu_kind = 'performance'
+  cpus = 16
+  memory_mb = 50176
+  processes = ['app']
+  size = 'performance-16x'
