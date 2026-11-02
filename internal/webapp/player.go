@@ -77,15 +77,14 @@ type WebAppPlayerManager struct {
 	rooms map[int64]*RoomState
 }
 
-var Manager = newPlayerManager()
-
-func newPlayerManager() *WebAppPlayerManager {
-	m := &WebAppPlayerManager{
-		rooms: make(map[int64]*RoomState),
-	}
-	go m.startPlaybackWatchdog()
-	return m
+var Manager = &WebAppPlayerManager{
+	rooms: make(map[int64]*RoomState),
 }
+
+func init() {
+	go Manager.startPlaybackWatchdog()
+}
+
 
 // startPlaybackWatchdog (ported from seeker.py & call.py):
 // Ensures tracks never hang past their duration and cleans up ghost queues automatically.
