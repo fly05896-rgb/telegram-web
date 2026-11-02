@@ -80,13 +80,11 @@ type WebAppPlayerManager struct {
 var Manager = newPlayerManager()
 
 func newPlayerManager() *WebAppPlayerManager {
-	return &WebAppPlayerManager{
+	m := &WebAppPlayerManager{
 		rooms: make(map[int64]*RoomState),
 	}
-}
-
-func init() {
-	go Manager.startPlaybackWatchdog()
+	go m.startPlaybackWatchdog()
+	return m
 }
 
 // startPlaybackWatchdog (ported from seeker.py & call.py):
